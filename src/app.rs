@@ -363,11 +363,16 @@ impl App {
                     }
                 }
                 HostMessage::StopHosting => {
+                    if let Screen::Hosting(state) = &mut self.screen {
+                        state.status = HostStatus::Stopping;
+                    }
                     if let Some(mut handle) = self.tunnel_handle.take() {
                         drop(tokio::spawn(async move { handle.stop().await }));
                     }
-                    self.hosting = false;
-                    self.screen = self.mode_select_screen();
+                    return Task::perform(
+                        async { tokio::time::sleep(std::time::Duration::from_secs(3)).await },
+                        |_| Message::TunnelEvent(TunnelEvent::Stopped),
+                    );
                 }
             },
             Message::TunnelEvent(event) => match event {

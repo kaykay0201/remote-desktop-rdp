@@ -13,6 +13,7 @@ pub enum HostMessage {
 pub enum HostStatus {
     Starting,
     Active,
+    Stopping,
     Error(String),
 }
 
@@ -35,9 +36,12 @@ impl HostState {
     pub fn view(&self) -> Element<'_, HostMessage> {
         let title = text("Host Mode").size(28).color(TEXT_PRIMARY);
 
+        let stopping = matches!(self.status, HostStatus::Stopping);
+
         let status_text = match &self.status {
             HostStatus::Starting => text("Starting tunnel...").size(16).color(TEXT_SECONDARY),
             HostStatus::Active => text("Tunnel active").size(16).color(SUCCESS),
+            HostStatus::Stopping => text("Stopping tunnel...").size(16).color(TEXT_SECONDARY),
             HostStatus::Error(e) => text(format!("Error: {e}")).size(16).color(DANGER),
         };
 
@@ -54,7 +58,7 @@ impl HostState {
 
         let copy_label = if self.copied { "Copied!" } else { "Copy URL" };
 
-        let copy_button = if self.tunnel_url.is_some() {
+        let copy_button = if self.tunnel_url.is_some() && !stopping {
             button(text(copy_label))
                 .on_press(HostMessage::CopyUrl)
                 .style(primary_button_style)
@@ -65,10 +69,12 @@ impl HostState {
                 .padding([10, 20])
         };
 
-        let stop_button = button(text("Stop Hosting"))
-            .on_press(HostMessage::StopHosting)
+        let mut stop_button = button(text("Stop Hosting"))
             .style(danger_button_style)
             .padding([10, 20]);
+        if !stopping {
+            stop_button = stop_button.on_press(HostMessage::StopHosting);
+        }
 
         let buttons = row![copy_button, stop_button].spacing(10);
 
