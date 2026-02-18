@@ -1,4 +1,5 @@
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::pin::Pin;
 
 use futures::Stream;
@@ -35,7 +36,9 @@ impl TunnelHandle {
 }
 
 #[derive(Clone)]
-pub struct HostTunnelKey;
+pub struct HostTunnelKey {
+    pub cloudflared_path: PathBuf,
+}
 
 impl Hash for HostTunnelKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -47,6 +50,7 @@ impl Hash for HostTunnelKey {
 pub struct ClientTunnelKey {
     pub tunnel_url: String,
     pub local_port: u16,
+    pub cloudflared_path: PathBuf,
 }
 
 impl Hash for ClientTunnelKey {
@@ -72,15 +76,16 @@ pub fn extract_tunnel_url(line: &str) -> Option<String> {
 }
 
 pub fn host_tunnel_subscription(
-    _key: &HostTunnelKey,
+    key: &HostTunnelKey,
 ) -> Pin<Box<dyn Stream<Item = TunnelEvent> + Send>> {
+    let cloudflared_path = key.cloudflared_path.clone();
     Box::pin(iced::stream::channel(100, async move |mut output| {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<TunnelCommand>(10);
         let _ = output
             .send(TunnelEvent::HandleReady(TunnelHandle { sender: cmd_tx }))
             .await;
 
-        let mut child = match Command::new("cloudflared")
+        let mut child = match Command::new(&cloudflared_path)
             .args(["tunnel", "--url", "tcp://localhost:3389"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -150,6 +155,7 @@ pub fn client_tunnel_subscription(
 ) -> Pin<Box<dyn Stream<Item = TunnelEvent> + Send>> {
     let tunnel_url = key.tunnel_url.clone();
     let local_port = key.local_port;
+    let cloudflared_path = key.cloudflared_path.clone();
 
     Box::pin(iced::stream::channel(100, async move |mut output| {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<TunnelCommand>(10);
@@ -158,7 +164,7 @@ pub fn client_tunnel_subscription(
             .await;
 
         let local_url = format!("localhost:{local_port}");
-        let mut child = match Command::new("cloudflared")
+        let mut child = match Command::new(&cloudflared_path)
             .args(["access", "tcp", "--hostname", &tunnel_url, "--url", &local_url])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -255,8 +261,12 @@ mod tests {
     fn host_tunnel_key_hash_stable() {
         use std::collections::hash_map::DefaultHasher;
 
-        let key1 = HostTunnelKey;
-        let key2 = HostTunnelKey;
+        let key1 = HostTunnelKey {
+            cloudflared_path: PathBuf::from("cloudflared"),
+        };
+        let key2 = HostTunnelKey {
+            cloudflared_path: PathBuf::from("cloudflared"),
+        };
 
         let mut h1 = DefaultHasher::new();
         let mut h2 = DefaultHasher::new();
@@ -272,10 +282,12 @@ mod tests {
         let key1 = ClientTunnelKey {
             tunnel_url: "https://a.trycloudflare.com".to_string(),
             local_port: 13389,
+            cloudflared_path: PathBuf::from("cloudflared"),
         };
         let key2 = ClientTunnelKey {
             tunnel_url: "https://b.trycloudflare.com".to_string(),
             local_port: 13389,
+            cloudflared_path: PathBuf::from("cloudflared"),
         };
 
         let mut h1 = DefaultHasher::new();

@@ -1,4 +1,5 @@
 mod app;
+mod cloudflared;
 mod config;
 mod error;
 mod rdp;

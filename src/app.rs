@@ -1,10 +1,12 @@
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::pin::Pin;
 
 use futures::Stream;
 use iced::widget::{button, column, container, text};
 use iced::{Center, Element, Fill, Subscription, Task, Theme};
 
+use crate::cloudflared::{self, DownloadProgress};
 use crate::config::ConnectionProfile;
 use crate::rdp::input::iced_key_to_scancode;
 use crate::rdp::session::rdp_subscription;
@@ -16,10 +18,12 @@ use crate::tunnel::{
 use crate::ui::host::{HostMessage, HostState, HostStatus};
 use crate::ui::login::{LoginMessage, LoginState};
 use crate::ui::mode_select::{ModeSelectMessage, ModeSelectState};
+use crate::ui::setup::{SetupMessage, SetupState, SetupStatus};
 use crate::ui::viewer::{ViewerMessage, ViewerState};
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    Setup(SetupMessage),
     ModeSelect(ModeSelectMessage),
     Login(LoginMessage),
     Host(HostMessage),
@@ -32,6 +36,7 @@ pub enum Message {
 }
 
 pub enum Screen {
+    Setup(SetupState),
     ModeSelect(ModeSelectState),
     Login(LoginState),
     Connecting(ConnectionProfile),
@@ -58,8 +63,49 @@ fn build_rdp_stream(
     Box::pin(rdp_subscription(profile.0.clone()))
 }
 
+#[derive(Clone, Hash)]
+struct DownloadKey;
+
+fn download_cloudflared_stream(
+    _key: &DownloadKey,
+) -> Pin<Box<dyn Stream<Item = SetupMessage> + Send>> {
+    use iced::futures::SinkExt;
+
+    Box::pin(iced::stream::channel(32, async move |mut output| {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let download_handle =
+            tokio::spawn(async move { cloudflared::download_cloudflared(tx).await });
+
+        while let Some(progress) = rx.recv().await {
+            let _ = output
+                .send(SetupMessage::DownloadProgress(progress))
+                .await;
+        }
+
+        match download_handle.await {
+            Ok(Ok(path)) => {
+                let _ = output.send(SetupMessage::DownloadComplete(path)).await;
+            }
+            Ok(Err(e)) => {
+                let _ = output
+                    .send(SetupMessage::DownloadProgress(DownloadProgress::Error(e)))
+                    .await;
+            }
+            Err(e) => {
+                let _ = output
+                    .send(SetupMessage::DownloadProgress(DownloadProgress::Error(
+                        format!("Download task failed: {e}"),
+                    )))
+                    .await;
+            }
+        }
+    }))
+}
+
 pub struct App {
     screen: Screen,
+    cloudflared_path: Option<PathBuf>,
+    downloading_cloudflared: bool,
     profile: Option<ConnectionProfile>,
     tunnel_handle: Option<TunnelHandle>,
     tunnel_url: Option<String>,
@@ -70,9 +116,18 @@ pub struct App {
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
+        let cloudflared_path = cloudflared::cloudflared_path();
+        let screen = if cloudflared_path.is_some() {
+            Screen::ModeSelect(ModeSelectState::new())
+        } else {
+            Screen::Setup(SetupState::new())
+        };
+
         (
             Self {
-                screen: Screen::ModeSelect(ModeSelectState::new()),
+                screen,
+                cloudflared_path,
+                downloading_cloudflared: false,
                 profile: None,
                 tunnel_handle: None,
                 tunnel_url: None,
@@ -86,6 +141,47 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Setup(msg) => match msg {
+                SetupMessage::StartDownload | SetupMessage::RetryDownload => {
+                    if let Screen::Setup(state) = &mut self.screen {
+                        state.status = SetupStatus::Downloading {
+                            downloaded: 0,
+                            total: 0,
+                        };
+                    }
+                    self.downloading_cloudflared = true;
+                }
+                SetupMessage::DownloadProgress(progress) => {
+                    if let Screen::Setup(state) = &mut self.screen {
+                        match &progress {
+                            DownloadProgress::Started { total_bytes } => {
+                                state.status = SetupStatus::Downloading {
+                                    downloaded: 0,
+                                    total: *total_bytes,
+                                };
+                            }
+                            DownloadProgress::Progress { downloaded, total } => {
+                                state.status =
+                                    SetupStatus::Downloading { downloaded: *downloaded, total: *total };
+                            }
+                            DownloadProgress::Finished(path) => {
+                                self.cloudflared_path = Some(path.clone());
+                                self.downloading_cloudflared = false;
+                                self.screen = Screen::ModeSelect(ModeSelectState::new());
+                            }
+                            DownloadProgress::Error(e) => {
+                                state.status = SetupStatus::Error(e.clone());
+                                self.downloading_cloudflared = false;
+                            }
+                        }
+                    }
+                }
+                SetupMessage::DownloadComplete(path) => {
+                    self.cloudflared_path = Some(path);
+                    self.downloading_cloudflared = false;
+                    self.screen = Screen::ModeSelect(ModeSelectState::new());
+                }
+            },
             Message::ModeSelect(msg) => match msg {
                 ModeSelectMessage::ConnectSelected => {
                     self.screen = Screen::Login(LoginState::new());
@@ -315,6 +411,7 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         match &self.screen {
+            Screen::Setup(state) => state.view().map(Message::Setup),
             Screen::ModeSelect(state) => state.view().map(Message::ModeSelect),
             Screen::Login(state) => state.view().map(Message::Login),
             Screen::Connecting(_) => container(text("Connecting...").size(24))
@@ -339,17 +436,25 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let host_tunnel_sub = if self.hosting {
-            Subscription::run_with(HostTunnelKey, host_tunnel_subscription)
-                .map(Message::TunnelEvent)
+            if let Some(ref path) = self.cloudflared_path {
+                let key = HostTunnelKey {
+                    cloudflared_path: path.clone(),
+                };
+                Subscription::run_with(key, host_tunnel_subscription)
+                    .map(Message::TunnelEvent)
+            } else {
+                Subscription::none()
+            }
         } else {
             Subscription::none()
         };
 
         let client_tunnel_sub = if self.client_tunnel_active {
-            if let Some(ref url) = self.tunnel_url {
+            if let (Some(url), Some(path)) = (&self.tunnel_url, &self.cloudflared_path) {
                 let key = ClientTunnelKey {
                     tunnel_url: url.clone(),
                     local_port: 13389,
+                    cloudflared_path: path.clone(),
                 };
                 Subscription::run_with(key, client_tunnel_subscription)
                     .map(Message::TunnelEvent)
@@ -381,7 +486,20 @@ impl App {
             _ => Subscription::none(),
         };
 
-        Subscription::batch([host_tunnel_sub, client_tunnel_sub, rdp_sub, keyboard_sub])
+        let download_sub = if self.downloading_cloudflared {
+            Subscription::run_with(DownloadKey, download_cloudflared_stream)
+                .map(Message::Setup)
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch([
+            download_sub,
+            host_tunnel_sub,
+            client_tunnel_sub,
+            rdp_sub,
+            keyboard_sub,
+        ])
     }
 
     pub fn theme(&self) -> Theme {
