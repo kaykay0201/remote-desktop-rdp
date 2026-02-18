@@ -1,0 +1,20 @@
+[package]
+name = "rust-rdp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iced = { version = "0.14", features = ["tokio", "image", "advanced"] }
+ironrdp = { version = "0.14", features = ["connector", "session", "input", "graphics", "dvc", "svc", "cliprdr", "displaycontrol", "rdpdr", "rdpsnd"] }
+ironrdp-tokio = { version = "0.8", features = ["reqwest"] }
+tokio = { version = "1", features = ["full"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+smallvec = "1"
