@@ -1,6 +1,8 @@
 use iced::widget::{button, column, container, row, text};
 use iced::{Center, Element, Fill};
 
+use crate::ui::theme::*;
+
 #[derive(Debug, Clone)]
 pub enum HostMessage {
     CopyUrl,
@@ -31,41 +33,55 @@ impl HostState {
     }
 
     pub fn view(&self) -> Element<'_, HostMessage> {
-        let title = text("Host Mode").size(28);
+        let title = text("Host Mode").size(28).color(TEXT_PRIMARY);
 
         let status_text = match &self.status {
-            HostStatus::Starting => text("Starting tunnel...").size(16),
-            HostStatus::Active => text("Tunnel active").size(16),
-            HostStatus::Error(e) => text(format!("Error: {e}")).size(16),
+            HostStatus::Starting => text("Starting tunnel...").size(16).color(TEXT_SECONDARY),
+            HostStatus::Active => text("Tunnel active").size(16).color(SUCCESS),
+            HostStatus::Error(e) => text(format!("Error: {e}")).size(16).color(DANGER),
         };
 
-        let url_display = if let Some(ref url) = self.tunnel_url {
-            column![text(url.as_str()).size(18),]
+        let url_display: Element<'_, HostMessage> = if let Some(ref url) = self.tunnel_url {
+            container(
+                text(url.as_str()).size(16).color(ACCENT_HOVER),
+            )
+            .style(url_container_style)
+            .padding([8, 16])
+            .into()
         } else {
-            column![text("Waiting for tunnel URL...").size(14),]
+            text("Waiting for tunnel URL...").size(14).color(TEXT_MUTED).into()
         };
 
         let copy_label = if self.copied { "Copied!" } else { "Copy URL" };
 
         let copy_button = if self.tunnel_url.is_some() {
-            button(text(copy_label)).on_press(HostMessage::CopyUrl)
+            button(text(copy_label))
+                .on_press(HostMessage::CopyUrl)
+                .style(primary_button_style)
+                .padding([10, 20])
         } else {
             button(text(copy_label))
+                .style(primary_button_style)
+                .padding([10, 20])
         };
 
         let stop_button = button(text("Stop Hosting"))
             .on_press(HostMessage::StopHosting)
-            .padding(10);
+            .style(danger_button_style)
+            .padding([10, 20]);
 
         let buttons = row![copy_button, stop_button].spacing(10);
 
-        let content = column![title, status_text, url_display, buttons]
+        let inner = column![title, status_text, url_display, buttons]
             .spacing(20)
-            .align_x(Center)
-            .padding(30)
+            .align_x(Center);
+
+        let card = container(inner)
+            .style(card_container_style)
+            .padding(36)
             .max_width(600);
 
-        container(content)
+        container(card)
             .center_x(Fill)
             .center_y(Fill)
             .into()

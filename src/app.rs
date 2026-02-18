@@ -5,6 +5,7 @@ use std::pin::Pin;
 use futures::Stream;
 use iced::widget::{button, column, container, text};
 use iced::{Center, Element, Fill, Subscription, Task, Theme};
+use crate::ui::theme::*;
 
 use crate::cloudflared::{self, DownloadProgress};
 use crate::config::ConnectionProfile;
@@ -549,24 +550,49 @@ impl App {
             Screen::Setup(state) => state.view().map(Message::Setup),
             Screen::ModeSelect(state) => state.view().map(Message::ModeSelect),
             Screen::Login(state) => state.view().map(Message::Login),
-            Screen::Connecting(_) => container(text("Connecting...").size(24))
-                .center_x(Fill)
-                .center_y(Fill)
-                .into(),
+            Screen::Connecting(_) => {
+                let inner = column![
+                    text("Connecting...").size(24).color(TEXT_PRIMARY),
+                    text("Establishing tunnel connection").size(14).color(TEXT_SECONDARY),
+                ]
+                .spacing(12)
+                .align_x(Center);
+
+                let card = container(inner)
+                    .style(card_container_style)
+                    .padding(40)
+                    .max_width(400);
+
+                container(card)
+                    .center_x(Fill)
+                    .center_y(Fill)
+                    .into()
+            }
             Screen::Hosting(state) => state.view().map(Message::Host),
             Screen::Viewer(state) => state.view().map(Message::Viewer),
             Screen::Update(state) => state.view().map(Message::Update),
-            Screen::Error(e) => container(
-                column![
-                    text(format!("Error: {}", e)).size(18),
-                    button("Back").on_press(Message::BackToLogin),
+            Screen::Error(e) => {
+                let inner = column![
+                    text("Error").size(28).color(DANGER),
+                    text(e.to_string()).size(16).color(TEXT_SECONDARY),
+                    button("Back")
+                        .on_press(Message::BackToLogin)
+                        .style(secondary_button_style)
+                        .padding([12, 24]),
                 ]
                 .spacing(20)
-                .align_x(Center),
-            )
-            .center_x(Fill)
-            .center_y(Fill)
-            .into(),
+                .align_x(Center);
+
+                let card = container(inner)
+                    .style(card_container_style)
+                    .padding(40)
+                    .max_width(480);
+
+                container(card)
+                    .center_x(Fill)
+                    .center_y(Fill)
+                    .into()
+            }
         }
     }
 

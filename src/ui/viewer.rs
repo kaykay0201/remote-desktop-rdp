@@ -2,6 +2,7 @@ use iced::widget::{button, column, container, image, mouse_area, row, text};
 use iced::{Element, Fill};
 
 use crate::rdp::RdpConnection;
+use crate::ui::theme::*;
 
 #[derive(Debug, Clone)]
 pub enum ViewerMessage {
@@ -59,16 +60,21 @@ impl ViewerState {
                 ViewerMessage::MouseWheel(y)
             });
 
-        let toolbar = row![
-            text("Connected").size(14),
-            button("Disconnect")
-                .on_press(ViewerMessage::Disconnect)
-                .padding(4),
-        ]
-        .spacing(10)
-        .padding(4);
+        let toolbar = container(
+            row![
+                text("Connected").size(14).color(SUCCESS),
+                button("Disconnect")
+                    .on_press(ViewerMessage::Disconnect)
+                    .style(danger_button_style)
+                    .padding([4, 12]),
+            ]
+            .spacing(10)
+            .padding(6),
+        )
+        .style(toolbar_container_style)
+        .width(Fill);
 
-        let content = column![toolbar, viewer_area,].spacing(0);
+        let content = column![toolbar, viewer_area].spacing(0);
 
         container(content).width(Fill).height(Fill).into()
     }

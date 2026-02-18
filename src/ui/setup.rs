@@ -4,6 +4,7 @@ use iced::widget::{button, column, container, progress_bar, text};
 use iced::{Center, Element, Fill};
 
 use crate::cloudflared::DownloadProgress;
+use crate::ui::theme::*;
 
 #[derive(Debug, Clone)]
 pub enum SetupMessage {
@@ -35,20 +36,28 @@ impl SetupState {
     }
 
     pub fn view(&self) -> Element<'_, SetupMessage> {
-        let title = text("Setup Required").size(28);
+        let title = text("Setup Required").size(28).color(TEXT_PRIMARY);
 
-        let content: Element<'_, SetupMessage> = match &self.status {
-            SetupStatus::Checking => column![title, text("Checking for cloudflared...").size(16),]
-                .spacing(20)
-                .align_x(Center)
-                .into(),
+        let inner: Element<'_, SetupMessage> = match &self.status {
+            SetupStatus::Checking => column![
+                title,
+                text("Checking for cloudflared...").size(16).color(TEXT_SECONDARY),
+            ]
+            .spacing(20)
+            .align_x(Center)
+            .into(),
             SetupStatus::NotFound => column![
                 title,
-                text("cloudflared is required but was not found on this system.").size(16),
-                text("It will be downloaded automatically from GitHub (~30 MB).").size(14),
+                text("cloudflared is required but was not found on this system.")
+                    .size(16)
+                    .color(TEXT_SECONDARY),
+                text("It will be downloaded automatically from GitHub (~30 MB).")
+                    .size(14)
+                    .color(TEXT_SECONDARY),
                 button(text("Download cloudflared").size(16))
                     .on_press(SetupMessage::StartDownload)
-                    .padding(12),
+                    .style(primary_button_style)
+                    .padding([12, 24]),
             ]
             .spacing(16)
             .align_x(Center)
@@ -69,31 +78,43 @@ impl SetupState {
 
                 column![
                     title,
-                    text("Downloading cloudflared...").size(16),
-                    container(progress_bar(0.0..=100.0, progress_ratio)).max_width(300),
-                    text(progress_text).size(14),
+                    text("Downloading cloudflared...").size(16).color(TEXT_SECONDARY),
+                    container(
+                        progress_bar(0.0..=100.0, progress_ratio).style(progress_bar_style)
+                    )
+                    .max_width(300),
+                    text(progress_text).size(14).color(TEXT_SECONDARY),
                 ]
                 .spacing(16)
                 .align_x(Center)
                 .into()
             }
-            SetupStatus::Done => column![title, text("Ready!").size(16),]
-                .spacing(20)
-                .align_x(Center)
-                .into(),
+            SetupStatus::Done => column![
+                title,
+                text("Ready!").size(16).color(SUCCESS),
+            ]
+            .spacing(20)
+            .align_x(Center)
+            .into(),
             SetupStatus::Error(e) => column![
                 title,
-                text(format!("Download failed: {e}")).size(16),
+                text(format!("Download failed: {e}")).size(16).color(DANGER),
                 button(text("Retry").size(16))
                     .on_press(SetupMessage::RetryDownload)
-                    .padding(12),
+                    .style(primary_button_style)
+                    .padding([12, 24]),
             ]
             .spacing(16)
             .align_x(Center)
             .into(),
         };
 
-        container(content)
+        let card = container(inner)
+            .style(card_container_style)
+            .padding(40)
+            .max_width(480);
+
+        container(card)
             .center_x(Fill)
             .center_y(Fill)
             .into()

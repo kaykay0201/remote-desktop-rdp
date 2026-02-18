@@ -2,6 +2,7 @@ use iced::widget::{button, column, container, row, text, text_input};
 use iced::{Center, Element, Fill};
 
 use crate::config::ConnectionProfile;
+use crate::ui::theme::*;
 
 const LOCAL_TUNNEL_PORT: u16 = 13389;
 
@@ -85,44 +86,54 @@ impl LoginState {
     }
 
     pub fn view(&self) -> Element<'_, LoginMessage> {
-        let title = text("Connect to Remote").size(28);
+        let title = text("Connect to Remote").size(28).color(TEXT_PRIMARY);
 
         let tunnel_url_input = text_input("Tunnel URL (https://xxx.trycloudflare.com)", &self.tunnel_url)
             .on_input(LoginMessage::TunnelUrlChanged)
-            .padding(8);
+            .style(input_style)
+            .padding(10);
 
         let port_input = text_input("RDP Port", &self.port)
             .on_input(LoginMessage::PortChanged)
-            .padding(8);
+            .style(input_style)
+            .padding(10);
 
         let username_input = text_input("Username", &self.username)
             .on_input(LoginMessage::UsernameChanged)
-            .padding(8);
+            .style(input_style)
+            .padding(10);
 
         let password_input = text_input("Password", &self.password)
             .on_input(LoginMessage::PasswordChanged)
             .secure(true)
-            .padding(8);
+            .style(input_style)
+            .padding(10);
 
         let width_input = text_input("Width", &self.width)
             .on_input(LoginMessage::WidthChanged)
-            .padding(8);
+            .style(input_style)
+            .padding(10);
 
         let height_input = text_input("Height", &self.height)
             .on_input(LoginMessage::HeightChanged)
-            .padding(8);
+            .style(input_style)
+            .padding(10);
 
         let connect_button = if self.tunnel_url.is_empty() {
-            button("Connect").padding(10)
+            button("Connect")
+                .style(primary_button_style)
+                .padding([12, 24])
         } else {
             button("Connect")
                 .on_press(LoginMessage::Connect)
-                .padding(10)
+                .style(primary_button_style)
+                .padding([12, 24])
         };
 
         let back_button = button("Back")
             .on_press(LoginMessage::BackToModeSelect)
-            .padding(10);
+            .style(secondary_button_style)
+            .padding([12, 24]);
 
         let form = column![
             title,
@@ -134,11 +145,14 @@ impl LoginState {
             row![back_button, connect_button].spacing(10),
         ]
         .spacing(12)
-        .padding(30)
-        .max_width(450)
         .align_x(Center);
 
-        container(form)
+        let card = container(form)
+            .style(card_container_style)
+            .padding(36)
+            .max_width(450);
+
+        container(card)
             .center_x(Fill)
             .center_y(Fill)
             .into()

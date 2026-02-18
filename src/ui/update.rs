@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use iced::widget::{button, column, container, progress_bar, text};
 use iced::{Center, Element, Fill};
 
+use crate::ui::theme::*;
 use crate::updater::{ReleaseInfo, UpdateProgress};
 
 #[derive(Debug, Clone)]
@@ -38,19 +39,23 @@ impl UpdateState {
     }
 
     pub fn view(&self) -> Element<'_, UpdateMessage> {
-        let title = text("Update Available").size(28);
+        let title = text("Update Available").size(28).color(TEXT_PRIMARY);
 
-        let content: Element<'_, UpdateMessage> = match &self.status {
+        let inner: Element<'_, UpdateMessage> = match &self.status {
             UpdateStatus::Available => column![
                 title,
-                text(format!("Version {} is available", self.release.version)).size(16),
-                text(&self.release.body).size(14),
+                text(format!("Version {} is available", self.release.version))
+                    .size(16)
+                    .color(TEXT_SECONDARY),
+                text(&self.release.body).size(14).color(TEXT_SECONDARY),
                 button(text("Update Now").size(16))
                     .on_press(UpdateMessage::StartUpdate)
-                    .padding(12),
+                    .style(primary_button_style)
+                    .padding([12, 24]),
                 button(text("Later").size(16))
                     .on_press(UpdateMessage::Cancel)
-                    .padding(12),
+                    .style(secondary_button_style)
+                    .padding([12, 24]),
             ]
             .spacing(16)
             .align_x(Center)
@@ -71,9 +76,12 @@ impl UpdateState {
 
                 column![
                     title,
-                    text("Downloading update...").size(16),
-                    container(progress_bar(0.0..=100.0, progress_ratio)).max_width(300),
-                    text(progress_text).size(14),
+                    text("Downloading update...").size(16).color(TEXT_SECONDARY),
+                    container(
+                        progress_bar(0.0..=100.0, progress_ratio).style(progress_bar_style)
+                    )
+                    .max_width(300),
+                    text(progress_text).size(14).color(TEXT_SECONDARY),
                 ]
                 .spacing(16)
                 .align_x(Center)
@@ -81,37 +89,49 @@ impl UpdateState {
             }
             UpdateStatus::ReadyToInstall(_) => column![
                 title,
-                text("Update downloaded successfully!").size(16),
+                text("Update downloaded successfully!").size(16).color(SUCCESS),
                 button(text("Restart & Update").size(16))
                     .on_press(UpdateMessage::ApplyAndRestart)
-                    .padding(12),
+                    .style(primary_button_style)
+                    .padding([12, 24]),
                 button(text("Later").size(16))
                     .on_press(UpdateMessage::Cancel)
-                    .padding(12),
+                    .style(secondary_button_style)
+                    .padding([12, 24]),
             ]
             .spacing(16)
             .align_x(Center)
             .into(),
-            UpdateStatus::Applying => column![title, text("Applying update...").size(16),]
-                .spacing(16)
-                .align_x(Center)
-                .into(),
+            UpdateStatus::Applying => column![
+                title,
+                text("Applying update...").size(16).color(TEXT_SECONDARY),
+            ]
+            .spacing(16)
+            .align_x(Center)
+            .into(),
             UpdateStatus::Error(e) => column![
                 title,
-                text(format!("Update failed: {e}")).size(16),
+                text(format!("Update failed: {e}")).size(16).color(DANGER),
                 button(text("Retry").size(16))
                     .on_press(UpdateMessage::StartUpdate)
-                    .padding(12),
+                    .style(primary_button_style)
+                    .padding([12, 24]),
                 button(text("Cancel").size(16))
                     .on_press(UpdateMessage::Cancel)
-                    .padding(12),
+                    .style(secondary_button_style)
+                    .padding([12, 24]),
             ]
             .spacing(16)
             .align_x(Center)
             .into(),
         };
 
-        container(content)
+        let card = container(inner)
+            .style(card_container_style)
+            .padding(40)
+            .max_width(480);
+
+        container(card)
             .center_x(Fill)
             .center_y(Fill)
             .into()
