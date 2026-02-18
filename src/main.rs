@@ -7,6 +7,7 @@ mod error;
 mod rdp;
 mod tunnel;
 mod ui;
+mod updater;
 
 use app::App;
 

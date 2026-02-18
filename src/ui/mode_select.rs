@@ -1,23 +1,46 @@
 use iced::widget::{button, column, container, row, text};
 use iced::{Center, Element, Fill, Length};
 
+use crate::updater::ReleaseInfo;
+
 #[derive(Debug, Clone)]
 pub enum ModeSelectMessage {
     ConnectSelected,
     HostSelected,
+    UpdateClicked,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ModeSelectState;
+#[derive(Debug, Clone)]
+pub struct ModeSelectState {
+    pub available_update: Option<ReleaseInfo>,
+}
 
 impl ModeSelectState {
     pub fn new() -> Self {
-        Self
+        Self {
+            available_update: None,
+        }
     }
 
     pub fn view(&self) -> Element<'_, ModeSelectMessage> {
         let title = text("Rust RDP").size(36);
         let subtitle = text("Choose a mode to get started").size(16);
+
+        let update_banner: Element<'_, ModeSelectMessage> =
+            if let Some(ref release) = self.available_update {
+                button(
+                    text(format!(
+                        "Update {} available — click to update",
+                        release.version
+                    ))
+                    .size(14),
+                )
+                .on_press(ModeSelectMessage::UpdateClicked)
+                .padding(10)
+                .into()
+            } else {
+                column![].into()
+            };
 
         let connect_card = button(
             column![
@@ -47,7 +70,7 @@ impl ModeSelectState {
 
         let cards = row![connect_card, host_card].spacing(30);
 
-        let content = column![title, subtitle, cards]
+        let content = column![title, subtitle, update_banner, cards]
             .spacing(24)
             .align_x(Center);
 

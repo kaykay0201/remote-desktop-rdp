@@ -19,7 +19,9 @@ use crate::ui::host::{HostMessage, HostState, HostStatus};
 use crate::ui::login::{LoginMessage, LoginState};
 use crate::ui::mode_select::{ModeSelectMessage, ModeSelectState};
 use crate::ui::setup::{SetupMessage, SetupState, SetupStatus};
+use crate::ui::update::{UpdateMessage, UpdateState, UpdateStatus};
 use crate::ui::viewer::{ViewerMessage, ViewerState};
+use crate::updater::{self, ReleaseInfo, UpdateProgress};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -30,6 +32,8 @@ pub enum Message {
     Viewer(ViewerMessage),
     RdpEvent(RdpEvent),
     TunnelEvent(TunnelEvent),
+    Update(UpdateMessage),
+    UpdateCheckResult(Option<ReleaseInfo>),
     ClientTunnelReady,
     BackToLogin,
     InputSent(bool),
@@ -42,6 +46,7 @@ pub enum Screen {
     Connecting(ConnectionProfile),
     Hosting(HostState),
     Viewer(ViewerState),
+    Update(UpdateState),
     Error(String),
 }
 
@@ -102,6 +107,47 @@ fn download_cloudflared_stream(
     }))
 }
 
+#[derive(Clone, Hash)]
+struct UpdateDownloadKey {
+    url: String,
+}
+
+fn download_update_stream(
+    key: &UpdateDownloadKey,
+) -> Pin<Box<dyn Stream<Item = UpdateMessage> + Send>> {
+    use iced::futures::SinkExt;
+
+    let url = key.url.clone();
+    Box::pin(iced::stream::channel(32, async move |mut output| {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let download_handle = tokio::spawn(async move { updater::download_update(url, tx).await });
+
+        while let Some(progress) = rx.recv().await {
+            let _ = output
+                .send(UpdateMessage::DownloadProgress(progress))
+                .await;
+        }
+
+        match download_handle.await {
+            Ok(Ok(path)) => {
+                let _ = output.send(UpdateMessage::DownloadComplete(path)).await;
+            }
+            Ok(Err(e)) => {
+                let _ = output
+                    .send(UpdateMessage::DownloadProgress(UpdateProgress::Error(e)))
+                    .await;
+            }
+            Err(e) => {
+                let _ = output
+                    .send(UpdateMessage::DownloadProgress(UpdateProgress::Error(
+                        format!("Download task failed: {e}"),
+                    )))
+                    .await;
+            }
+        }
+    }))
+}
+
 pub struct App {
     screen: Screen,
     cloudflared_path: Option<PathBuf>,
@@ -112,16 +158,25 @@ pub struct App {
     hosting: bool,
     client_tunnel_active: bool,
     pending_profile: Option<ConnectionProfile>,
+    downloading_update: bool,
+    available_update: Option<ReleaseInfo>,
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
+        updater::cleanup_old_update();
+
         let cloudflared_path = cloudflared::cloudflared_path();
         let screen = if cloudflared_path.is_some() {
             Screen::ModeSelect(ModeSelectState::new())
         } else {
             Screen::Setup(SetupState::new())
         };
+
+        let update_task = Task::perform(
+            async { updater::check_for_update().await.ok().flatten() },
+            Message::UpdateCheckResult,
+        );
 
         (
             Self {
@@ -134,9 +189,17 @@ impl App {
                 hosting: false,
                 client_tunnel_active: false,
                 pending_profile: None,
+                downloading_update: false,
+                available_update: None,
             },
-            Task::none(),
+            update_task,
         )
+    }
+
+    fn mode_select_screen(&self) -> Screen {
+        let mut state = ModeSelectState::new();
+        state.available_update = self.available_update.clone();
+        Screen::ModeSelect(state)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -167,7 +230,7 @@ impl App {
                             DownloadProgress::Finished(path) => {
                                 self.cloudflared_path = Some(path.clone());
                                 self.downloading_cloudflared = false;
-                                self.screen = Screen::ModeSelect(ModeSelectState::new());
+                                self.screen = self.mode_select_screen();
                             }
                             DownloadProgress::Error(e) => {
                                 state.status = SetupStatus::Error(e.clone());
@@ -179,7 +242,73 @@ impl App {
                 SetupMessage::DownloadComplete(path) => {
                     self.cloudflared_path = Some(path);
                     self.downloading_cloudflared = false;
-                    self.screen = Screen::ModeSelect(ModeSelectState::new());
+                    self.screen = self.mode_select_screen();
+                }
+            },
+            Message::UpdateCheckResult(opt) => {
+                self.available_update = opt.clone();
+                if let Screen::ModeSelect(state) = &mut self.screen {
+                    state.available_update = opt;
+                }
+            }
+            Message::Update(msg) => match msg {
+                UpdateMessage::StartUpdate => {
+                    if let Screen::Update(state) = &mut self.screen {
+                        state.status = UpdateStatus::Downloading {
+                            downloaded: 0,
+                            total: 0,
+                        };
+                        self.downloading_update = true;
+                    }
+                }
+                UpdateMessage::DownloadProgress(progress) => {
+                    if let Screen::Update(state) = &mut self.screen {
+                        match &progress {
+                            UpdateProgress::Started { total_bytes } => {
+                                state.status = UpdateStatus::Downloading {
+                                    downloaded: 0,
+                                    total: *total_bytes,
+                                };
+                            }
+                            UpdateProgress::Progress { downloaded, total } => {
+                                state.status = UpdateStatus::Downloading {
+                                    downloaded: *downloaded,
+                                    total: *total,
+                                };
+                            }
+                            UpdateProgress::Finished(path) => {
+                                self.downloading_update = false;
+                                state.status = UpdateStatus::ReadyToInstall(path.clone());
+                            }
+                            UpdateProgress::Error(e) => {
+                                self.downloading_update = false;
+                                state.status = UpdateStatus::Error(e.clone());
+                            }
+                        }
+                    }
+                }
+                UpdateMessage::DownloadComplete(path) => {
+                    self.downloading_update = false;
+                    if let Screen::Update(state) = &mut self.screen {
+                        state.status = UpdateStatus::ReadyToInstall(path);
+                    }
+                }
+                UpdateMessage::ApplyAndRestart => {
+                    if let Screen::Update(state) = &mut self.screen
+                        && let UpdateStatus::ReadyToInstall(ref path) = state.status
+                    {
+                        let path = path.clone();
+                        state.status = UpdateStatus::Applying;
+                        if let Err(e) = updater::apply_update(&path) {
+                            state.status = UpdateStatus::Error(e);
+                        } else {
+                            std::process::exit(0);
+                        }
+                    }
+                }
+                UpdateMessage::Cancel => {
+                    self.downloading_update = false;
+                    self.screen = self.mode_select_screen();
                 }
             },
             Message::ModeSelect(msg) => match msg {
@@ -190,11 +319,17 @@ impl App {
                     self.hosting = true;
                     self.screen = Screen::Hosting(HostState::new());
                 }
+                ModeSelectMessage::UpdateClicked => {
+                    if let Some(ref release) = self.available_update {
+                        self.screen =
+                            Screen::Update(UpdateState::new(release.clone()));
+                    }
+                }
             },
             Message::Login(msg) => {
                 let is_back = matches!(msg, LoginMessage::BackToModeSelect);
                 if is_back {
-                    self.screen = Screen::ModeSelect(ModeSelectState::new());
+                    self.screen = self.mode_select_screen();
                     return Task::none();
                 }
                 if let Screen::Login(state) = &mut self.screen
@@ -231,7 +366,7 @@ impl App {
                         drop(tokio::spawn(async move { handle.stop().await }));
                     }
                     self.hosting = false;
-                    self.screen = Screen::ModeSelect(ModeSelectState::new());
+                    self.screen = self.mode_select_screen();
                 }
             },
             Message::TunnelEvent(event) => match event {
@@ -256,7 +391,7 @@ impl App {
                     self.tunnel_handle = None;
                     if self.hosting {
                         self.hosting = false;
-                        self.screen = Screen::ModeSelect(ModeSelectState::new());
+                        self.screen = self.mode_select_screen();
                     }
                 }
                 TunnelEvent::Output(_) => {}
@@ -402,7 +537,7 @@ impl App {
                 if let Some(mut handle) = self.tunnel_handle.take() {
                     drop(tokio::spawn(async move { handle.stop().await }));
                 }
-                self.screen = Screen::ModeSelect(ModeSelectState::new());
+                self.screen = self.mode_select_screen();
             }
             Message::InputSent(_) => {}
         }
@@ -420,6 +555,7 @@ impl App {
                 .into(),
             Screen::Hosting(state) => state.view().map(Message::Host),
             Screen::Viewer(state) => state.view().map(Message::Viewer),
+            Screen::Update(state) => state.view().map(Message::Update),
             Screen::Error(e) => container(
                 column![
                     text(format!("Error: {}", e)).size(18),
@@ -493,8 +629,25 @@ impl App {
             Subscription::none()
         };
 
+        let update_download_sub = if self.downloading_update {
+            if let Screen::Update(state) = &self.screen {
+                Subscription::run_with(
+                    UpdateDownloadKey {
+                        url: state.release.download_url.clone(),
+                    },
+                    download_update_stream,
+                )
+                .map(Message::Update)
+            } else {
+                Subscription::none()
+            }
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
             download_sub,
+            update_download_sub,
             host_tunnel_sub,
             client_tunnel_sub,
             rdp_sub,
