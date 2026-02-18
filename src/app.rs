@@ -367,7 +367,6 @@ impl App {
                     if let Screen::Hosting(state) = &mut self.screen {
                         state.status = HostStatus::Stopping;
                     }
-                    self.hosting = false;
                     if let Some(mut handle) = self.tunnel_handle.take() {
                         drop(tokio::spawn(async move { handle.stop().await }));
                     }
@@ -393,6 +392,7 @@ impl App {
                 }
                 TunnelEvent::Stopped => {
                     self.tunnel_handle = None;
+                    self.hosting = false;
                     return Task::perform(
                         async { tokio::time::sleep(std::time::Duration::from_secs(1)).await },
                         |_| Message::StopComplete,

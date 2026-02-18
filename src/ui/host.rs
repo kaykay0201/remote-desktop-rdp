@@ -72,7 +72,7 @@ impl HostState {
         let mut stop_button = button(text("Stop Hosting"))
             .style(danger_button_style)
             .padding([10, 20]);
-        if !stopping {
+        if matches!(self.status, HostStatus::Active) {
             stop_button = stop_button.on_press(HostMessage::StopHosting);
         }
 
