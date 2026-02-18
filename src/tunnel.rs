@@ -85,13 +85,14 @@ pub fn host_tunnel_subscription(
             .send(TunnelEvent::HandleReady(TunnelHandle { sender: cmd_tx }))
             .await;
 
-        let mut child = match Command::new(&cloudflared_path)
-            .args(["tunnel", "--url", "tcp://localhost:3389"])
+        let mut cmd = Command::new(&cloudflared_path);
+        cmd.args(["tunnel", "--url", "tcp://localhost:3389"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-        {
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
                 let _ = output
@@ -164,13 +165,14 @@ pub fn client_tunnel_subscription(
             .await;
 
         let local_url = format!("localhost:{local_port}");
-        let mut child = match Command::new(&cloudflared_path)
-            .args(["access", "tcp", "--hostname", &tunnel_url, "--url", &local_url])
+        let mut cmd = Command::new(&cloudflared_path);
+        cmd.args(["access", "tcp", "--hostname", &tunnel_url, "--url", &local_url])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-        {
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
                 let _ = output

@@ -36,6 +36,7 @@ pub enum Message {
     Update(UpdateMessage),
     UpdateCheckResult(Option<ReleaseInfo>),
     ClientTunnelReady,
+    StopComplete,
     BackToLogin,
     InputSent(bool),
 }
@@ -366,13 +367,10 @@ impl App {
                     if let Screen::Hosting(state) = &mut self.screen {
                         state.status = HostStatus::Stopping;
                     }
+                    self.hosting = false;
                     if let Some(mut handle) = self.tunnel_handle.take() {
                         drop(tokio::spawn(async move { handle.stop().await }));
                     }
-                    return Task::perform(
-                        async { tokio::time::sleep(std::time::Duration::from_secs(3)).await },
-                        |_| Message::TunnelEvent(TunnelEvent::Stopped),
-                    );
                 }
             },
             Message::TunnelEvent(event) => match event {
@@ -395,10 +393,10 @@ impl App {
                 }
                 TunnelEvent::Stopped => {
                     self.tunnel_handle = None;
-                    if self.hosting {
-                        self.hosting = false;
-                        self.screen = self.mode_select_screen();
-                    }
+                    return Task::perform(
+                        async { tokio::time::sleep(std::time::Duration::from_secs(1)).await },
+                        |_| Message::StopComplete,
+                    );
                 }
                 TunnelEvent::Output(_) => {}
             },
@@ -536,6 +534,9 @@ impl App {
                         }
                     }
                 }
+            }
+            Message::StopComplete => {
+                self.screen = self.mode_select_screen();
             }
             Message::BackToLogin => {
                 self.profile = None;
