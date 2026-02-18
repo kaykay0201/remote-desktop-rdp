@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod error;
 mod rdp;
+mod tunnel;
 mod ui;
 
 use app::App;

@@ -9,21 +9,33 @@ use crate::config::ConnectionProfile;
 use crate::rdp::input::iced_key_to_scancode;
 use crate::rdp::session::rdp_subscription;
 use crate::rdp::{InputCommand, MouseButtonKind, RdpEvent};
+use crate::tunnel::{
+    client_tunnel_subscription, host_tunnel_subscription, ClientTunnelKey, HostTunnelKey,
+    TunnelEvent, TunnelHandle,
+};
+use crate::ui::host::{HostMessage, HostState, HostStatus};
 use crate::ui::login::{LoginMessage, LoginState};
+use crate::ui::mode_select::{ModeSelectMessage, ModeSelectState};
 use crate::ui::viewer::{ViewerMessage, ViewerState};
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    ModeSelect(ModeSelectMessage),
     Login(LoginMessage),
+    Host(HostMessage),
     Viewer(ViewerMessage),
     RdpEvent(RdpEvent),
+    TunnelEvent(TunnelEvent),
+    ClientTunnelReady,
     BackToLogin,
     InputSent(bool),
 }
 
 pub enum Screen {
+    ModeSelect(ModeSelectState),
     Login(LoginState),
     Connecting(ConnectionProfile),
+    Hosting(HostState),
     Viewer(ViewerState),
     Error(String),
 }
@@ -49,14 +61,24 @@ fn build_rdp_stream(
 pub struct App {
     screen: Screen,
     profile: Option<ConnectionProfile>,
+    tunnel_handle: Option<TunnelHandle>,
+    tunnel_url: Option<String>,
+    hosting: bool,
+    client_tunnel_active: bool,
+    pending_profile: Option<ConnectionProfile>,
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
         (
             Self {
-                screen: Screen::Login(LoginState::new()),
+                screen: Screen::ModeSelect(ModeSelectState::new()),
                 profile: None,
+                tunnel_handle: None,
+                tunnel_url: None,
+                hosting: false,
+                client_tunnel_active: false,
+                pending_profile: None,
             },
             Task::none(),
         )
@@ -64,14 +86,85 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::ModeSelect(msg) => match msg {
+                ModeSelectMessage::ConnectSelected => {
+                    self.screen = Screen::Login(LoginState::new());
+                }
+                ModeSelectMessage::HostSelected => {
+                    self.hosting = true;
+                    self.screen = Screen::Hosting(HostState::new());
+                }
+            },
             Message::Login(msg) => {
+                let is_back = matches!(msg, LoginMessage::BackToModeSelect);
+                if is_back {
+                    self.screen = Screen::ModeSelect(ModeSelectState::new());
+                    return Task::none();
+                }
                 if let Screen::Login(state) = &mut self.screen
-                    && let Some(profile) = state.update(msg)
+                    && let Some((tunnel_url, profile)) = state.update(msg)
                 {
-                    self.profile = Some(profile.clone());
+                    self.tunnel_url = Some(tunnel_url);
+                    self.pending_profile = Some(profile.clone());
+                    self.client_tunnel_active = true;
                     self.screen = Screen::Connecting(profile);
+                    return Task::perform(
+                        async {
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        },
+                        |_| Message::ClientTunnelReady,
+                    );
                 }
             }
+            Message::ClientTunnelReady => {
+                if let Some(profile) = self.pending_profile.take() {
+                    self.profile = Some(profile);
+                }
+            }
+            Message::Host(msg) => match msg {
+                HostMessage::CopyUrl => {
+                    if let Screen::Hosting(state) = &mut self.screen {
+                        state.copied = true;
+                        if let Some(ref url) = state.tunnel_url {
+                            return iced::clipboard::write(url.clone());
+                        }
+                    }
+                }
+                HostMessage::StopHosting => {
+                    if let Some(mut handle) = self.tunnel_handle.take() {
+                        drop(tokio::spawn(async move { handle.stop().await }));
+                    }
+                    self.hosting = false;
+                    self.screen = Screen::ModeSelect(ModeSelectState::new());
+                }
+            },
+            Message::TunnelEvent(event) => match event {
+                TunnelEvent::HandleReady(handle) => {
+                    self.tunnel_handle = Some(handle);
+                }
+                TunnelEvent::UrlReady(url) => {
+                    if let Screen::Hosting(state) = &mut self.screen {
+                        state.tunnel_url = Some(url);
+                        state.status = HostStatus::Active;
+                    }
+                }
+                TunnelEvent::Error(e) => {
+                    if let Some(mut handle) = self.tunnel_handle.take() {
+                        drop(tokio::spawn(async move { handle.stop().await }));
+                    }
+                    self.hosting = false;
+                    self.client_tunnel_active = false;
+                    self.screen = Screen::Error(e);
+                }
+                TunnelEvent::Stopped => {
+                    self.tunnel_handle = None;
+                    if self.hosting {
+                        self.hosting = false;
+                        self.screen = Screen::ModeSelect(ModeSelectState::new());
+                    }
+                }
+                TunnelEvent::Output(_) => {}
+            },
             Message::RdpEvent(event) => match event {
                 RdpEvent::Connected(conn) => {
                     let (w, h) = match &self.screen {
@@ -91,10 +184,18 @@ impl App {
                 }
                 RdpEvent::Error(e) => {
                     self.profile = None;
+                    self.client_tunnel_active = false;
+                    if let Some(mut handle) = self.tunnel_handle.take() {
+                        drop(tokio::spawn(async move { handle.stop().await }));
+                    }
                     self.screen = Screen::Error(e);
                 }
                 RdpEvent::Disconnected => {
                     self.profile = None;
+                    self.client_tunnel_active = false;
+                    if let Some(mut handle) = self.tunnel_handle.take() {
+                        drop(tokio::spawn(async move { handle.stop().await }));
+                    }
                     self.screen = Screen::Login(LoginState::new());
                 }
                 RdpEvent::StatusChanged(_) => {}
@@ -105,6 +206,10 @@ impl App {
                         ViewerMessage::Disconnect => {
                             let mut conn = state.connection.clone();
                             self.profile = None;
+                            self.client_tunnel_active = false;
+                            if let Some(mut handle) = self.tunnel_handle.take() {
+                                drop(tokio::spawn(async move { handle.stop().await }));
+                            }
                             self.screen = Screen::Login(LoginState::new());
                             return Task::perform(
                                 async move {
@@ -197,7 +302,11 @@ impl App {
             }
             Message::BackToLogin => {
                 self.profile = None;
-                self.screen = Screen::Login(LoginState::new());
+                self.client_tunnel_active = false;
+                if let Some(mut handle) = self.tunnel_handle.take() {
+                    drop(tokio::spawn(async move { handle.stop().await }));
+                }
+                self.screen = Screen::ModeSelect(ModeSelectState::new());
             }
             Message::InputSent(_) => {}
         }
@@ -206,16 +315,18 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         match &self.screen {
+            Screen::ModeSelect(state) => state.view().map(Message::ModeSelect),
             Screen::Login(state) => state.view().map(Message::Login),
             Screen::Connecting(_) => container(text("Connecting...").size(24))
                 .center_x(Fill)
                 .center_y(Fill)
                 .into(),
+            Screen::Hosting(state) => state.view().map(Message::Host),
             Screen::Viewer(state) => state.view().map(Message::Viewer),
             Screen::Error(e) => container(
                 column![
                     text(format!("Error: {}", e)).size(18),
-                    button("Back to Login").on_press(Message::BackToLogin),
+                    button("Back").on_press(Message::BackToLogin),
                 ]
                 .spacing(20)
                 .align_x(Center),
@@ -227,6 +338,28 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        let host_tunnel_sub = if self.hosting {
+            Subscription::run_with(HostTunnelKey, host_tunnel_subscription)
+                .map(Message::TunnelEvent)
+        } else {
+            Subscription::none()
+        };
+
+        let client_tunnel_sub = if self.client_tunnel_active {
+            if let Some(ref url) = self.tunnel_url {
+                let key = ClientTunnelKey {
+                    tunnel_url: url.clone(),
+                    local_port: 13389,
+                };
+                Subscription::run_with(key, client_tunnel_subscription)
+                    .map(Message::TunnelEvent)
+            } else {
+                Subscription::none()
+            }
+        } else {
+            Subscription::none()
+        };
+
         let rdp_sub = if let Some(profile) = &self.profile {
             Subscription::run_with(HashableProfile(profile.clone()), build_rdp_stream)
                 .map(Message::RdpEvent)
@@ -248,7 +381,7 @@ impl App {
             _ => Subscription::none(),
         };
 
-        Subscription::batch([rdp_sub, keyboard_sub])
+        Subscription::batch([host_tunnel_sub, client_tunnel_sub, rdp_sub, keyboard_sub])
     }
 
     pub fn theme(&self) -> Theme {
