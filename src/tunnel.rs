@@ -103,6 +103,12 @@ pub fn host_tunnel_subscription(
                 return;
             }
         };
+        #[cfg(windows)]
+        {
+            if let Some(handle) = child.raw_handle() {
+                crate::process::assign_child_to_job(handle);
+            }
+        }
 
         let stderr = child.stderr.take().unwrap();
         let reader = tokio::io::BufReader::new(stderr);
@@ -183,6 +189,12 @@ pub fn client_tunnel_subscription(
                 return;
             }
         };
+        #[cfg(windows)]
+        {
+            if let Some(handle) = child.raw_handle() {
+                crate::process::assign_child_to_job(handle);
+            }
+        }
 
         let stderr = child.stderr.take().unwrap();
         let reader = tokio::io::BufReader::new(stderr);

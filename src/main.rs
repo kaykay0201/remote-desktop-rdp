@@ -4,6 +4,7 @@ mod app;
 mod cloudflared;
 mod config;
 mod error;
+mod process;
 mod rdp;
 mod tunnel;
 mod ui;
