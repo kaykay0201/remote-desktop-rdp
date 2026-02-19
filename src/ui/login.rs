@@ -9,7 +9,6 @@ const LOCAL_TUNNEL_PORT: u16 = 13389;
 #[derive(Debug, Clone)]
 pub enum LoginMessage {
     TunnelUrlChanged(String),
-    PortChanged(String),
     UsernameChanged(String),
     PasswordChanged(String),
     WidthChanged(String),
@@ -21,7 +20,6 @@ pub enum LoginMessage {
 #[derive(Debug, Clone, Default)]
 pub struct LoginState {
     pub tunnel_url: String,
-    pub port: String,
     pub username: String,
     pub password: String,
     pub width: String,
@@ -33,7 +31,6 @@ impl LoginState {
         let defaults = ConnectionProfile::default();
         Self {
             tunnel_url: String::new(),
-            port: defaults.port.to_string(),
             username: String::new(),
             password: String::new(),
             width: defaults.width.to_string(),
@@ -44,7 +41,6 @@ impl LoginState {
     pub fn update(&mut self, msg: LoginMessage) -> Option<(String, ConnectionProfile)> {
         match msg {
             LoginMessage::TunnelUrlChanged(s) => self.tunnel_url = s,
-            LoginMessage::PortChanged(s) => self.port = s,
             LoginMessage::UsernameChanged(s) => self.username = s,
             LoginMessage::PasswordChanged(s) => self.password = s,
             LoginMessage::WidthChanged(s) => self.width = s,
@@ -53,10 +49,6 @@ impl LoginState {
                 if self.tunnel_url.is_empty() {
                     return None;
                 }
-                let port = match self.port.parse::<u16>() {
-                    Ok(p) => p,
-                    Err(_) => return None,
-                };
                 if self.username.is_empty() {
                     return None;
                 }
@@ -71,7 +63,6 @@ impl LoginState {
                 let tunnel_url = self.tunnel_url.clone();
                 let profile = ConnectionProfile {
                     hostname: "localhost".to_string(),
-                    port,
                     username: self.username.clone(),
                     password: self.password.clone(),
                     width,
@@ -90,11 +81,6 @@ impl LoginState {
 
         let tunnel_url_input = text_input("Tunnel URL (https://xxx.trycloudflare.com)", &self.tunnel_url)
             .on_input(LoginMessage::TunnelUrlChanged)
-            .style(input_style)
-            .padding(10);
-
-        let port_input = text_input("RDP Port", &self.port)
-            .on_input(LoginMessage::PortChanged)
             .style(input_style)
             .padding(10);
 
@@ -138,7 +124,6 @@ impl LoginState {
         let form = column![
             title,
             tunnel_url_input,
-            port_input,
             username_input,
             password_input,
             row![width_input, height_input].spacing(10),
@@ -167,7 +152,6 @@ mod tests {
     fn default_state() {
         let state = LoginState::new();
         assert!(state.tunnel_url.is_empty());
-        assert_eq!(state.port, "3389");
         assert!(state.username.is_empty());
         assert!(state.password.is_empty());
         assert_eq!(state.width, "1920");
@@ -197,7 +181,6 @@ mod tests {
         assert_eq!(profile.hostname, "localhost");
         assert_eq!(profile.proxy_port, LOCAL_TUNNEL_PORT);
         assert_eq!(profile.username, "admin");
-        assert_eq!(profile.port, 3389);
     }
 
     #[test]
@@ -216,13 +199,4 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn connect_with_invalid_port_returns_none() {
-        let mut state = LoginState::new();
-        state.tunnel_url = "https://test.trycloudflare.com".to_string();
-        state.username = "admin".to_string();
-        state.port = "not_a_number".to_string();
-        let result = state.update(LoginMessage::Connect);
-        assert!(result.is_none());
-    }
 }

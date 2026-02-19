@@ -1,6 +1,7 @@
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::time::Duration;
 
 use futures::Stream;
 use iced::widget::{button, column, container, text};
@@ -33,6 +34,7 @@ pub enum Message {
     Viewer(ViewerMessage),
     RdpEvent(RdpEvent),
     TunnelEvent(TunnelEvent),
+    ClientTunnelEvent(TunnelEvent),
     Update(UpdateMessage),
     UpdateCheckResult(Option<ReleaseInfo>),
     ClientTunnelReady,
@@ -57,7 +59,6 @@ struct HashableProfile(ConnectionProfile);
 impl Hash for HashableProfile {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hostname.hash(state);
-        self.0.port.hash(state);
         self.0.username.hash(state);
         self.0.proxy_port.hash(state);
     }
@@ -365,12 +366,30 @@ impl App {
                     self.tunnel_url = Some(tunnel_url);
                     self.pending_profile = Some(profile.clone());
                     self.client_tunnel_active = true;
+                    let proxy_port = profile.proxy_port;
                     self.screen = Screen::Connecting(profile);
                     return Task::perform(
-                        async {
-                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        async move {
+                            let addr = format!("localhost:{proxy_port}");
+                            let deadline =
+                                tokio::time::Instant::now() + Duration::from_secs(15);
+                            loop {
+                                if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+                                    return Ok(());
+                                }
+                                if tokio::time::Instant::now() > deadline {
+                                    return Err(
+                                        "Tunnel proxy did not start within 15 seconds"
+                                            .to_string(),
+                                    );
+                                }
+                                tokio::time::sleep(Duration::from_millis(300)).await;
+                            }
                         },
-                        |_| Message::ClientTunnelReady,
+                        |result: Result<(), String>| match result {
+                            Ok(()) => Message::ClientTunnelReady,
+                            Err(e) => Message::ClientTunnelEvent(TunnelEvent::Error(e)),
+                        },
                     );
                 }
             }
@@ -412,18 +431,41 @@ impl App {
                         drop(tokio::spawn(async move { handle.stop().await }));
                     }
                     self.hosting = false;
-                    self.client_tunnel_active = false;
                     self.screen = Screen::Error(e);
                 }
                 TunnelEvent::Stopped => {
                     self.tunnel_handle = None;
                     self.hosting = false;
                     return Task::perform(
-                        async { tokio::time::sleep(std::time::Duration::from_secs(1)).await },
+                        async { tokio::time::sleep(Duration::from_secs(1)).await },
                         |_| Message::StopComplete,
                     );
                 }
                 TunnelEvent::Output(_) => {}
+            },
+            Message::ClientTunnelEvent(event) => match event {
+                TunnelEvent::HandleReady(handle) => {
+                    self.tunnel_handle = Some(handle);
+                }
+                TunnelEvent::Error(e) => {
+                    self.client_tunnel_active = false;
+                    self.pending_profile = None;
+                    if let Some(mut handle) = self.tunnel_handle.take() {
+                        drop(tokio::spawn(async move { handle.stop().await }));
+                    }
+                    self.screen = Screen::Error(e);
+                }
+                TunnelEvent::Stopped => {
+                    self.client_tunnel_active = false;
+                    self.tunnel_handle = None;
+                    if matches!(self.screen, Screen::Connecting(_)) {
+                        self.pending_profile = None;
+                        self.screen = Screen::Error(
+                            "Tunnel connection closed unexpectedly".to_string(),
+                        );
+                    }
+                }
+                TunnelEvent::UrlReady(_) | TunnelEvent::Output(_) => {}
             },
             Message::RdpEvent(event) => match event {
                 RdpEvent::Connected(conn) => {
@@ -586,7 +628,7 @@ impl App {
             Screen::Connecting(_) => {
                 let inner = column![
                     text("Connecting...").size(24).color(TEXT_PRIMARY),
-                    text("Establishing tunnel connection").size(14).color(TEXT_SECONDARY),
+                    text("Starting tunnel proxy...").size(14).color(TEXT_SECONDARY),
                 ]
                 .spacing(12)
                 .align_x(Center);
@@ -653,7 +695,7 @@ impl App {
                     cloudflared_path: path.clone(),
                 };
                 Subscription::run_with(key, client_tunnel_subscription)
-                    .map(Message::TunnelEvent)
+                    .map(Message::ClientTunnelEvent)
             } else {
                 Subscription::none()
             }

@@ -6,7 +6,6 @@ use crate::error::{RdpError, Result};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionProfile {
     pub hostname: String,
-    pub port: u16,
     pub username: String,
     #[serde(skip)]
     pub password: String,
@@ -34,7 +33,6 @@ impl Default for ConnectionProfile {
     fn default() -> Self {
         Self {
             hostname: String::new(),
-            port: 3389,
             username: String::new(),
             password: String::new(),
             width: default_width(),
@@ -70,7 +68,6 @@ mod tests {
     #[test]
     fn default_profile_values() {
         let profile = ConnectionProfile::default();
-        assert_eq!(profile.port, 3389);
         assert_eq!(profile.width, 1920);
         assert_eq!(profile.height, 1080);
         assert_eq!(profile.proxy_port, 3390);
@@ -100,7 +97,6 @@ mod tests {
     fn deserialize_round_trip() {
         let mut profile = ConnectionProfile::default();
         profile.hostname = "myhost".to_string();
-        profile.port = 4000;
         profile.username = "admin".to_string();
         profile.width = 1280;
         profile.height = 720;
@@ -110,7 +106,6 @@ mod tests {
         let deserialized: ConnectionProfile = toml::from_str(&serialized).unwrap();
 
         assert_eq!(deserialized.hostname, "myhost");
-        assert_eq!(deserialized.port, 4000);
         assert_eq!(deserialized.username, "admin");
         assert_eq!(deserialized.width, 1280);
         assert_eq!(deserialized.height, 720);
