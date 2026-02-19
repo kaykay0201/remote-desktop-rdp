@@ -86,7 +86,7 @@ pub fn host_tunnel_subscription(
             .await;
 
         let mut cmd = Command::new(&cloudflared_path);
-        cmd.args(["tunnel", "--url", "tcp://localhost:3389"])
+        cmd.args(["tunnel", "--url", "tcp://127.0.0.1:3389"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
