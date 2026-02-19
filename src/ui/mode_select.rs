@@ -2,52 +2,24 @@ use iced::widget::{button, column, container, row, text};
 use iced::{Center, Element, Fill, Length};
 
 use crate::ui::theme::*;
-use crate::updater::ReleaseInfo;
 
 #[derive(Debug, Clone)]
 pub enum ModeSelectMessage {
     ConnectSelected,
     HostSelected,
-    UpdateClicked,
 }
 
 #[derive(Debug, Clone)]
-pub struct ModeSelectState {
-    pub available_update: Option<ReleaseInfo>,
-}
+pub struct ModeSelectState;
 
 impl ModeSelectState {
     pub fn new() -> Self {
-        Self {
-            available_update: None,
-        }
+        Self
     }
 
     pub fn view(&self) -> Element<'_, ModeSelectMessage> {
         let title = text("Rust RDP").size(40).color(TEXT_PRIMARY);
         let subtitle = text("Choose a mode to get started").size(16).color(TEXT_SECONDARY);
-
-        let update_banner: Element<'_, ModeSelectMessage> =
-            if let Some(ref release) = self.available_update {
-                container(
-                    button(
-                        text(format!(
-                            "Update {} available — click to update",
-                            release.version
-                        ))
-                        .size(14)
-                        .color(ACCENT_HOVER),
-                    )
-                    .on_press(ModeSelectMessage::UpdateClicked)
-                    .style(secondary_button_style)
-                    .padding(10),
-                )
-                .style(banner_container_style)
-                .padding(4)
-                .into()
-            } else {
-                column![].into()
-            };
 
         let connect_card = button(
             column![
@@ -81,7 +53,7 @@ impl ModeSelectState {
             .size(12)
             .color(TEXT_MUTED);
 
-        let content = column![title, subtitle, update_banner, cards, version]
+        let content = column![title, subtitle, cards, version]
             .spacing(24)
             .align_x(Center);
 

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -8,6 +9,7 @@ use tracing::info;
 pub struct ReleaseInfo {
     pub version: String,
     pub download_url: String,
+    pub checksum_url: Option<String>,
     pub body: String,
 }
 
@@ -15,6 +17,7 @@ pub struct ReleaseInfo {
 pub enum UpdateProgress {
     Started { total_bytes: u64 },
     Progress { downloaded: u64, total: u64 },
+    Verifying,
     Finished(PathBuf),
     Error(String),
 }
@@ -77,9 +80,16 @@ pub async fn check_for_update() -> Result<Option<ReleaseInfo>, String> {
         .find(|a| a.name == "rust-rdp.exe")
         .ok_or_else(|| "No rust-rdp.exe asset found in release".to_string())?;
 
+    let checksum_url = release
+        .assets
+        .iter()
+        .find(|a| a.name == "rust-rdp.exe.sha256")
+        .map(|a| a.browser_download_url.clone());
+
     Ok(Some(ReleaseInfo {
         version: release.tag_name,
         download_url: asset.browser_download_url.clone(),
+        checksum_url,
         body: release.body.unwrap_or_default(),
     }))
 }
@@ -147,47 +157,106 @@ pub async fn download_update(
     Ok(dest)
 }
 
+pub fn compute_sha256(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file for hashing: {e}"))?;
+    let hash = Sha256::digest(&bytes);
+    Ok(format!("{:x}", hash))
+}
+
+pub async fn verify_checksum(exe_path: &Path, checksum_url: &str) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .user_agent("rust-rdp")
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    let response = client
+        .get(checksum_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download checksum: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Checksum download failed with status: {}",
+            response.status()
+        ));
+    }
+
+    let checksum_text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read checksum: {e}"))?;
+
+    let expected_hash = checksum_text
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| "Empty checksum file".to_string())?
+        .to_lowercase();
+
+    let actual_hash = compute_sha256(exe_path)?;
+
+    if actual_hash != expected_hash {
+        return Err(format!(
+            "Checksum mismatch: expected {expected_hash}, got {actual_hash}"
+        ));
+    }
+
+    info!("SHA256 verification passed");
+    Ok(())
+}
+
 pub fn apply_update(new_exe_path: &Path) -> Result<(), String> {
-    let current_exe = current_exe_path()?;
-    let pid = std::process::id();
-    let bat_dir = crate::cloudflared::managed_dir();
-    let bat_path = bat_dir.join("update.bat");
+    let dir = crate::cloudflared::managed_dir();
+    let backup_path = dir.join("rust-rdp-backup.exe");
 
-    let new_exe = new_exe_path.display();
-    let current_exe = current_exe.display();
+    let current_exe =
+        std::env::current_exe().map_err(|e| format!("Failed to get current exe: {e}"))?;
 
-    let script = format!(
-        r#"@echo off
-:wait_loop
-tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL
-if not errorlevel 1 ( timeout /t 1 /nobreak >NUL & goto wait_loop )
-copy /Y "{new_exe}" "{current_exe}"
-if errorlevel 1 ( echo Update failed. & pause >NUL & exit /b 1 )
-del "{new_exe}"
-start "" "{current_exe}"
-del "%~f0"
-"#
-    );
+    std::fs::copy(&current_exe, &backup_path)
+        .map_err(|e| format!("Failed to create backup: {e}"))?;
+    info!("Backed up current exe to {}", backup_path.display());
 
-    std::fs::write(&bat_path, &script)
-        .map_err(|e| format!("Failed to write update script: {e}"))?;
+    self_replace::self_replace(new_exe_path)
+        .map_err(|e| format!("Self-replace failed: {e}"))?;
+    info!("Self-replace succeeded");
 
-    let bat_path_str = bat_path.to_string_lossy().to_string();
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "/min", &bat_path_str])
+    let _ = std::fs::remove_file(new_exe_path);
+
+    let current_exe =
+        std::env::current_exe().map_err(|e| format!("Failed to get new exe path: {e}"))?;
+    std::process::Command::new(current_exe)
         .spawn()
-        .map_err(|e| format!("Failed to launch update script: {e}"))?;
+        .map_err(|e| format!("Failed to relaunch: {e}"))?;
 
     Ok(())
+}
+
+fn update_marker_path() -> PathBuf {
+    crate::cloudflared::managed_dir().join(".update-ok")
+}
+
+fn backup_exe_path() -> PathBuf {
+    crate::cloudflared::managed_dir().join("rust-rdp-backup.exe")
+}
+
+pub fn check_post_update_health() {
+    let marker = update_marker_path();
+    let backup = backup_exe_path();
+
+    if backup.exists() && !marker.exists() {
+        let _ = std::fs::write(&marker, "ok");
+        info!("Post-update: marker created, backup preserved for one session");
+    } else if backup.exists() && marker.exists() {
+        let _ = std::fs::remove_file(&backup);
+        let _ = std::fs::remove_file(&marker);
+        info!("Post-update: backup and marker cleaned up");
+    }
 }
 
 pub fn staging_exe_path() -> PathBuf {
     crate::cloudflared::managed_dir().join("rust-rdp-update.exe")
 }
 
-pub fn current_exe_path() -> Result<PathBuf, String> {
-    std::env::current_exe().map_err(|e| format!("Failed to get current exe path: {e}"))
-}
 
 pub fn cleanup_old_update() {
     let staging = staging_exe_path();
@@ -244,5 +313,37 @@ mod tests {
     #[test]
     fn cleanup_no_panic() {
         cleanup_old_update();
+    }
+
+    #[test]
+    fn compute_sha256_works() {
+        let dir = std::env::temp_dir().join("rust-rdp-test-sha256");
+        let _ = std::fs::create_dir_all(&dir);
+        let test_file = dir.join("test.bin");
+        std::fs::write(&test_file, b"hello world").unwrap();
+        let hash = compute_sha256(&test_file).unwrap();
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+        let _ = std::fs::remove_file(&test_file);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn backup_path_correct() {
+        let path = backup_exe_path();
+        assert_eq!(path.file_name().unwrap(), "rust-rdp-backup.exe");
+    }
+
+    #[test]
+    fn marker_path_correct() {
+        let path = update_marker_path();
+        assert_eq!(path.file_name().unwrap(), ".update-ok");
+    }
+
+    #[test]
+    fn health_check_no_panic() {
+        check_post_update_health();
     }
 }

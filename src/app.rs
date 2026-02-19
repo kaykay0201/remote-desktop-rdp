@@ -20,7 +20,7 @@ use crate::ui::host::{HostMessage, HostState, HostStatus};
 use crate::ui::login::{LoginMessage, LoginState};
 use crate::ui::mode_select::{ModeSelectMessage, ModeSelectState};
 use crate::ui::setup::{SetupMessage, SetupState, SetupStatus};
-use crate::ui::update::{UpdateMessage, UpdateState, UpdateStatus};
+use crate::ui::update::{UpdateBannerState, UpdateMessage, update_banner_view};
 use crate::ui::viewer::{ViewerMessage, ViewerState};
 use crate::updater::{self, ReleaseInfo, UpdateProgress};
 
@@ -48,7 +48,6 @@ pub enum Screen {
     Connecting(ConnectionProfile),
     Hosting(HostState),
     Viewer(ViewerState),
-    Update(UpdateState),
     Error(String),
 }
 
@@ -160,13 +159,13 @@ pub struct App {
     hosting: bool,
     client_tunnel_active: bool,
     pending_profile: Option<ConnectionProfile>,
-    downloading_update: bool,
-    available_update: Option<ReleaseInfo>,
+    update_banner: UpdateBannerState,
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
         updater::cleanup_old_update();
+        updater::check_post_update_health();
 
         let cloudflared_path = cloudflared::cloudflared_path();
         let screen = if cloudflared_path.is_some() {
@@ -191,17 +190,14 @@ impl App {
                 hosting: false,
                 client_tunnel_active: false,
                 pending_profile: None,
-                downloading_update: false,
-                available_update: None,
+                update_banner: UpdateBannerState::Hidden,
             },
             update_task,
         )
     }
 
     fn mode_select_screen(&self) -> Screen {
-        let mut state = ModeSelectState::new();
-        state.available_update = self.available_update.clone();
-        Screen::ModeSelect(state)
+        Screen::ModeSelect(ModeSelectState::new())
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -248,69 +244,104 @@ impl App {
                 }
             },
             Message::UpdateCheckResult(opt) => {
-                self.available_update = opt.clone();
-                if let Screen::ModeSelect(state) = &mut self.screen {
-                    state.available_update = opt;
+                if let Some(release) = opt {
+                    self.update_banner = UpdateBannerState::Available(release);
                 }
             }
             Message::Update(msg) => match msg {
-                UpdateMessage::StartUpdate => {
-                    if let Screen::Update(state) = &mut self.screen {
-                        state.status = UpdateStatus::Downloading {
+                UpdateMessage::StartDownload => {
+                    if let UpdateBannerState::Available(ref release) = self.update_banner {
+                        self.update_banner = UpdateBannerState::Downloading {
+                            release: release.clone(),
                             downloaded: 0,
                             total: 0,
                         };
-                        self.downloading_update = true;
                     }
                 }
+                UpdateMessage::Retry => {
+                    self.update_banner = UpdateBannerState::Hidden;
+                    return Task::perform(
+                        async { updater::check_for_update().await.ok().flatten() },
+                        Message::UpdateCheckResult,
+                    );
+                }
                 UpdateMessage::DownloadProgress(progress) => {
-                    if let Screen::Update(state) = &mut self.screen {
-                        match &progress {
-                            UpdateProgress::Started { total_bytes } => {
-                                state.status = UpdateStatus::Downloading {
+                    match &progress {
+                        UpdateProgress::Started { total_bytes } => {
+                            if let UpdateBannerState::Downloading { ref release, .. } =
+                                self.update_banner
+                            {
+                                self.update_banner = UpdateBannerState::Downloading {
+                                    release: release.clone(),
                                     downloaded: 0,
                                     total: *total_bytes,
                                 };
                             }
-                            UpdateProgress::Progress { downloaded, total } => {
-                                state.status = UpdateStatus::Downloading {
+                        }
+                        UpdateProgress::Progress { downloaded, total } => {
+                            if let UpdateBannerState::Downloading { ref release, .. } =
+                                self.update_banner
+                            {
+                                self.update_banner = UpdateBannerState::Downloading {
+                                    release: release.clone(),
                                     downloaded: *downloaded,
                                     total: *total,
                                 };
                             }
-                            UpdateProgress::Finished(path) => {
-                                self.downloading_update = false;
-                                state.status = UpdateStatus::ReadyToInstall(path.clone());
-                            }
-                            UpdateProgress::Error(e) => {
-                                self.downloading_update = false;
-                                state.status = UpdateStatus::Error(e.clone());
-                            }
+                        }
+                        UpdateProgress::Verifying => {
+                            self.update_banner = UpdateBannerState::Verifying;
+                        }
+                        UpdateProgress::Finished(_) => {}
+                        UpdateProgress::Error(e) => {
+                            self.update_banner = UpdateBannerState::Error(e.clone());
                         }
                     }
                 }
                 UpdateMessage::DownloadComplete(path) => {
-                    self.downloading_update = false;
-                    if let Screen::Update(state) = &mut self.screen {
-                        state.status = UpdateStatus::ReadyToInstall(path);
+                    let checksum_url = match &self.update_banner {
+                        UpdateBannerState::Downloading { release, .. } => {
+                            release.checksum_url.clone()
+                        }
+                        _ => None,
+                    };
+
+                    self.update_banner = UpdateBannerState::Verifying;
+
+                    if let Some(url) = checksum_url {
+                        let exe_path = path.clone();
+                        return Task::perform(
+                            async move {
+                                updater::verify_checksum(&exe_path, &url).await?;
+                                Ok(exe_path)
+                            },
+                            |result| Message::Update(UpdateMessage::VerifyComplete(result)),
+                        );
+                    } else {
+                        self.update_banner = UpdateBannerState::Ready(path);
                     }
                 }
+                UpdateMessage::VerifyComplete(result) => match result {
+                    Ok(path) => {
+                        self.update_banner = UpdateBannerState::Ready(path);
+                    }
+                    Err(e) => {
+                        self.update_banner = UpdateBannerState::Error(e);
+                    }
+                },
                 UpdateMessage::ApplyAndRestart => {
-                    if let Screen::Update(state) = &mut self.screen
-                        && let UpdateStatus::ReadyToInstall(ref path) = state.status
-                    {
+                    if let UpdateBannerState::Ready(ref path) = self.update_banner {
                         let path = path.clone();
-                        state.status = UpdateStatus::Applying;
+                        self.update_banner = UpdateBannerState::Applying;
                         if let Err(e) = updater::apply_update(&path) {
-                            state.status = UpdateStatus::Error(e);
+                            self.update_banner = UpdateBannerState::Error(e);
                         } else {
                             std::process::exit(0);
                         }
                     }
                 }
-                UpdateMessage::Cancel => {
-                    self.downloading_update = false;
-                    self.screen = self.mode_select_screen();
+                UpdateMessage::Dismiss => {
+                    self.update_banner = UpdateBannerState::Dismissed;
                 }
             },
             Message::ModeSelect(msg) => match msg {
@@ -320,12 +351,6 @@ impl App {
                 ModeSelectMessage::HostSelected => {
                     self.hosting = true;
                     self.screen = Screen::Hosting(HostState::new());
-                }
-                ModeSelectMessage::UpdateClicked => {
-                    if let Some(ref release) = self.available_update {
-                        self.screen =
-                            Screen::Update(UpdateState::new(release.clone()));
-                    }
                 }
             },
             Message::Login(msg) => {
@@ -552,7 +577,9 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        match &self.screen {
+        let banner = update_banner_view(&self.update_banner).map(Message::Update);
+
+        let screen_content: Element<'_, Message> = match &self.screen {
             Screen::Setup(state) => state.view().map(Message::Setup),
             Screen::ModeSelect(state) => state.view().map(Message::ModeSelect),
             Screen::Login(state) => state.view().map(Message::Login),
@@ -576,7 +603,6 @@ impl App {
             }
             Screen::Hosting(state) => state.view().map(Message::Host),
             Screen::Viewer(state) => state.view().map(Message::Viewer),
-            Screen::Update(state) => state.view().map(Message::Update),
             Screen::Error(e) => {
                 let inner = column![
                     text("Error").size(28).color(DANGER),
@@ -599,7 +625,9 @@ impl App {
                     .center_y(Fill)
                     .into()
             }
-        }
+        };
+
+        column![banner, screen_content].into()
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -661,21 +689,18 @@ impl App {
             Subscription::none()
         };
 
-        let update_download_sub = if self.downloading_update {
-            if let Screen::Update(state) = &self.screen {
+        let update_download_sub =
+            if let UpdateBannerState::Downloading { ref release, .. } = self.update_banner {
                 Subscription::run_with(
                     UpdateDownloadKey {
-                        url: state.release.download_url.clone(),
+                        url: release.download_url.clone(),
                     },
                     download_update_stream,
                 )
                 .map(Message::Update)
             } else {
                 Subscription::none()
-            }
-        } else {
-            Subscription::none()
-        };
+            };
 
         Subscription::batch([
             download_sub,
