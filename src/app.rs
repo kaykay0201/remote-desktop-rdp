@@ -376,6 +376,7 @@ impl App {
                                 tokio::time::Instant::now() + Duration::from_secs(15);
                             loop {
                                 if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
                                     return Ok(());
                                 }
                                 if tokio::time::Instant::now() > deadline {
