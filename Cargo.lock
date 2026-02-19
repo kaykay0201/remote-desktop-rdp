@@ -4924,7 +4924,7 @@ dependencies = [
 
 [[package]]
 name = "rust-rdp"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "dirs-next",
