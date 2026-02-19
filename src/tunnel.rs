@@ -194,7 +194,11 @@ pub fn client_tunnel_subscription(
                     match line_result {
                         Ok(Some(ref line)) => {
                             info!("cloudflared client: {}", line);
-                            let _ = output.send(TunnelEvent::Output(line.clone())).await;
+                            if line.contains(" ERR ") || line.contains("\"level\":\"error\"") || line.contains("\"level\":\"fatal\"") {
+                                let _ = output.send(TunnelEvent::Error(line.clone())).await;
+                            } else {
+                                let _ = output.send(TunnelEvent::Output(line.clone())).await;
+                            }
                         }
                         Ok(None) => {
                             info!("cloudflared client stderr closed");

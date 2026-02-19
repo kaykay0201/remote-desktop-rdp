@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use futures::Stream;
 use iced::futures::channel::mpsc;
 use iced::futures::sink::SinkExt;
@@ -18,16 +20,28 @@ pub fn rdp_subscription(profile: ConnectionProfile) -> impl Stream<Item = RdpEve
             .send(RdpEvent::StatusChanged(ConnectionStatus::Connecting))
             .await;
 
-        let (framed, connection_result) =
-            match crate::rdp::connection::establish_connection(&profile).await {
-                Ok(result) => result,
-                Err(e) => {
-                    let _ = output
-                        .send(RdpEvent::Error(format!("Connection failed: {e}")))
-                        .await;
-                    return;
-                }
-            };
+        let (framed, connection_result) = match tokio::time::timeout(
+            Duration::from_secs(30),
+            crate::rdp::connection::establish_connection(&profile),
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => {
+                let _ = output
+                    .send(RdpEvent::Error(format!("Connection failed: {e}")))
+                    .await;
+                return;
+            }
+            Err(_) => {
+                let _ = output
+                    .send(RdpEvent::Error(
+                        "Connection timed out after 30 seconds".to_string(),
+                    ))
+                    .await;
+                return;
+            }
+        };
 
         let (input_tx, mut input_rx) = mpsc::channel::<InputCommand>(100);
         let _ = output
@@ -50,9 +64,9 @@ pub fn rdp_subscription(profile: ConnectionProfile) -> impl Stream<Item = RdpEve
 
         loop {
             tokio::select! {
-                pdu_result = framed_read.read_pdu() => {
+                pdu_result = tokio::time::timeout(Duration::from_secs(60), framed_read.read_pdu()) => {
                     match pdu_result {
-                        Ok((action, payload)) => {
+                        Ok(Ok((action, payload))) => {
                             match active_stage.process(&mut image, action, &payload) {
                                 Ok(outputs) => {
                                     let mut frame_updated = false;
@@ -98,9 +112,16 @@ pub fn rdp_subscription(profile: ConnectionProfile) -> impl Stream<Item = RdpEve
                                 }
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             error!("Read PDU error: {e}");
                             let _ = output.send(RdpEvent::Error(format!("Read error: {e}"))).await;
+                            return;
+                        }
+                        Err(_) => {
+                            error!("Read PDU timed out after 60 seconds");
+                            let _ = output.send(RdpEvent::Error(
+                                "Connection timed out — no data received for 60 seconds".to_string(),
+                            )).await;
                             return;
                         }
                     }

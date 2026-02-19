@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use futures::Stream;
-use iced::widget::{button, column, container, text};
+use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Center, Element, Fill, Subscription, Task, Theme};
 use crate::ui::theme::*;
 
@@ -37,6 +37,7 @@ pub enum Message {
     ClientTunnelEvent(TunnelEvent),
     Update(UpdateMessage),
     UpdateCheckResult(Option<ReleaseInfo>),
+    CopyError,
     ClientTunnelReady,
     StopComplete,
     BackToLogin,
@@ -605,6 +606,11 @@ impl App {
             Message::StopComplete => {
                 self.screen = self.mode_select_screen();
             }
+            Message::CopyError => {
+                if let Screen::Error(ref e) = self.screen {
+                    return iced::clipboard::write(e.clone());
+                }
+            }
             Message::BackToLogin => {
                 self.profile = None;
                 self.client_tunnel_active = false;
@@ -646,13 +652,38 @@ impl App {
             Screen::Hosting(state) => state.view().map(Message::Host),
             Screen::Viewer(state) => state.view().map(Message::Viewer),
             Screen::Error(e) => {
-                let inner = column![
-                    text("Error").size(28).color(DANGER),
-                    text(e.to_string()).size(16).color(TEXT_SECONDARY),
+                let error_text = scrollable(
+                    container(text(e.to_string()).size(14).color(TEXT_SECONDARY))
+                        .padding([12, 16])
+                        .style(|_theme: &Theme| container::Style {
+                            background: Some(BG_DARK.into()),
+                            border: iced::Border {
+                                radius: 6.0.into(),
+                                width: 1.0,
+                                color: BORDER_SUBTLE,
+                            },
+                            ..Default::default()
+                        }),
+                )
+                .height(iced::Length::Shrink);
+
+                let buttons = row![
+                    button("Copy Error")
+                        .on_press(Message::CopyError)
+                        .style(secondary_button_style)
+                        .padding([10, 20]),
                     button("Back")
                         .on_press(Message::BackToLogin)
                         .style(secondary_button_style)
-                        .padding([12, 24]),
+                        .padding([10, 20]),
+                ]
+                .spacing(12)
+                .align_y(Center);
+
+                let inner = column![
+                    text("Error").size(28).color(DANGER),
+                    error_text,
+                    buttons,
                 ]
                 .spacing(20)
                 .align_x(Center);
@@ -660,7 +691,7 @@ impl App {
                 let card = container(inner)
                     .style(card_container_style)
                     .padding(40)
-                    .max_width(480);
+                    .max_width(520);
 
                 container(card)
                     .center_x(Fill)
