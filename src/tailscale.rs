@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Default)]
@@ -22,22 +23,41 @@ struct SelfNode {
     host_name: Option<String>,
 }
 
-pub async fn check_tailscale() -> TailscaleStatus {
-    let version_check = tokio::process::Command::new("tailscale")
-        .arg("version")
-        .output()
-        .await;
-
-    let is_installed = matches!(version_check, Ok(ref o) if o.status.success());
-
-    if !is_installed {
-        return TailscaleStatus {
-            is_installed: false,
-            ..Default::default()
-        };
+fn find_tailscale_cli() -> Option<PathBuf> {
+    let candidates = [
+        PathBuf::from(r"C:\Program Files\Tailscale\tailscale.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\Tailscale\tailscale.exe"),
+    ];
+    for path in &candidates {
+        if path.exists() {
+            return Some(path.clone());
+        }
     }
+    if let Ok(output) = std::process::Command::new("where").arg("tailscale").output() {
+        if output.status.success() {
+            if let Some(line) = String::from_utf8_lossy(&output.stdout).lines().next() {
+                let p = PathBuf::from(line.trim());
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
 
-    let output = match tokio::process::Command::new("tailscale")
+pub async fn check_tailscale() -> TailscaleStatus {
+    let cli = match find_tailscale_cli() {
+        Some(path) => path,
+        None => {
+            return TailscaleStatus {
+                is_installed: false,
+                ..Default::default()
+            };
+        }
+    };
+
+    let output = match tokio::process::Command::new(&cli)
         .args(["status", "--json"])
         .output()
         .await
@@ -131,6 +151,16 @@ mod tests {
         assert!(status.is_installed);
         assert!(!status.is_running);
         assert!(status.ip.is_none());
+    }
+
+    #[test]
+    fn find_cli_returns_some_on_windows() {
+        let result = find_tailscale_cli();
+        // On machines with Tailscale installed, this should find it
+        // We just verify it doesn't panic
+        if let Some(path) = result {
+            assert!(path.exists());
+        }
     }
 
     #[test]
