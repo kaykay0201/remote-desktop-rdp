@@ -10,13 +10,13 @@ use crate::capture::capturer::capture_loop;
 use crate::input_handler::handler::InputHandler;
 use super::NetworkEvent;
 
-pub fn host_server_subscription(port: u16) -> iced::Subscription<NetworkEvent> {
-    iced::Subscription::run_with(port, move |port| host_server_stream(*port))
+pub fn host_server_subscription(host: String, port: u16) -> iced::Subscription<NetworkEvent> {
+    iced::Subscription::run_with((host.clone(), port), move |(host, port)| host_server_stream(host.clone(), *port))
 }
 
-fn host_server_stream(port: u16) -> Pin<Box<dyn Stream<Item = NetworkEvent> + Send>> {
+fn host_server_stream(host: String, port: u16) -> Pin<Box<dyn Stream<Item = NetworkEvent> + Send>> {
     Box::pin(iced::stream::channel(100, move |mut output: futures::channel::mpsc::Sender<NetworkEvent>| async move {
-        let addr = format!("0.0.0.0:{port}");
+        let addr = format!("{host}:{port}");
         let listener = match TcpListener::bind(&addr).await {
             Ok(l) => l,
             Err(e) => {

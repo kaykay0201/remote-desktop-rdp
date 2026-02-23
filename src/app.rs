@@ -549,7 +549,8 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let host_sub = if self.hosting {
-            host_server_subscription(DEFAULT_PORT).map(Message::NetworkEvent)
+            let bind_addr = self.tailscale_status.ip.clone().unwrap_or_else(|| "0.0.0.0".to_string());
+            host_server_subscription(bind_addr, DEFAULT_PORT).map(Message::NetworkEvent)
         } else {
             Subscription::none()
         };
