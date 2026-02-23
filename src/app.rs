@@ -14,6 +14,7 @@ use crate::tailscale::TailscaleStatus;
 use crate::ui::host::{HostMessage, HostState, HostStatus};
 use crate::ui::login::{LoginMessage, LoginState};
 use crate::ui::mode_select::{ModeSelectMessage, ModeSelectState};
+use crate::ui::tailscale_setup::{TailscaleSetupMessage, TailscaleSetupState, TailscaleSetupStatus};
 use crate::ui::update::{UpdateBannerState, UpdateMessage, update_banner_view};
 use crate::ui::viewer::{ViewerMessage, ViewerState};
 use crate::updater::{self, ReleaseInfo, UpdateProgress};
@@ -24,6 +25,7 @@ pub enum Message {
     Login(LoginMessage),
     Host(HostMessage),
     Viewer(ViewerMessage),
+    TailscaleSetup(TailscaleSetupMessage),
     NetworkEvent(NetworkEvent),
     TailscaleCheck(TailscaleStatus),
     Update(UpdateMessage),
@@ -35,6 +37,7 @@ pub enum Message {
 }
 
 pub enum Screen {
+    TailscaleSetup(TailscaleSetupState),
     ModeSelect(ModeSelectState),
     Login(LoginState),
     Connecting,
@@ -110,9 +113,11 @@ impl App {
             Message::TailscaleCheck,
         );
 
+        let setup_state = TailscaleSetupState { status: TailscaleSetupStatus::Checking };
+
         (
             Self {
-                screen: Screen::ModeSelect(ModeSelectState::new()),
+                screen: Screen::TailscaleSetup(setup_state),
                 tailscale_status: TailscaleStatus::default(),
                 hosting: false,
                 connecting: false,
@@ -132,8 +137,29 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::TailscaleCheck(status) => {
-                self.tailscale_status = status;
+                if status.is_running {
+                    self.tailscale_status = status;
+                    self.screen = Screen::ModeSelect(ModeSelectState::new());
+                } else {
+                    let is_installed = status.is_installed;
+                    self.tailscale_status = status;
+                    self.screen = Screen::TailscaleSetup(TailscaleSetupState::new(is_installed));
+                }
             }
+            Message::TailscaleSetup(msg) => match msg {
+                TailscaleSetupMessage::Install => {
+                    crate::tailscale::open_install_page();
+                }
+                TailscaleSetupMessage::Recheck => {
+                    if let Screen::TailscaleSetup(state) = &mut self.screen {
+                        state.status = TailscaleSetupStatus::Checking;
+                    }
+                    return Task::perform(
+                        crate::tailscale::check_tailscale(),
+                        Message::TailscaleCheck,
+                    );
+                }
+            },
             Message::UpdateCheckResult(opt) => {
                 if let Some(release) = opt {
                     self.update_banner = UpdateBannerState::Available(release);
@@ -473,6 +499,7 @@ impl App {
         let banner = update_banner_view(&self.update_banner).map(Message::Update);
 
         let screen_content: Element<'_, Message> = match &self.screen {
+            Screen::TailscaleSetup(state) => state.view().map(Message::TailscaleSetup),
             Screen::ModeSelect(state) => state.view().map(Message::ModeSelect),
             Screen::Login(state) => state.view().map(Message::Login),
             Screen::Connecting => {
