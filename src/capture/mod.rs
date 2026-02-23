@@ -25,3 +25,8 @@ pub enum CaptureEvent {
     Error(String),
     Stopped,
 }
+
+pub enum CaptureCommand {
+    SetQuality(u8),
+    Stop,
+}

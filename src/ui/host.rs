@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use iced::widget::{button, column, container, row, text};
 use iced::{Center, Element, Fill};
 
@@ -17,11 +19,12 @@ pub enum HostStatus {
     Error(String),
 }
 
-#[derive(Debug, Clone)]
 pub struct HostState {
     pub tunnel_url: Option<String>,
     pub status: HostStatus,
     pub copied: bool,
+    pub client_addr: Option<String>,
+    pub connected_since: Option<Instant>,
 }
 
 impl HostState {
@@ -30,6 +33,8 @@ impl HostState {
             tunnel_url: None,
             status: HostStatus::Starting,
             copied: false,
+            client_addr: None,
+            connected_since: None,
         }
     }
 
@@ -56,6 +61,29 @@ impl HostState {
             text("Waiting for server to start...").size(14).color(TEXT_MUTED).into()
         };
 
+        let client_info: Element<'_, HostMessage> = if let Some(ref addr) = self.client_addr {
+            let duration_text = if let Some(since) = self.connected_since {
+                let elapsed = since.elapsed();
+                let secs = elapsed.as_secs();
+                if secs >= 60 {
+                    format!("{}m {}s", secs / 60, secs % 60)
+                } else {
+                    format!("{secs}s")
+                }
+            } else {
+                "0s".to_string()
+            };
+
+            column![
+                text(format!("Client connected: {addr}")).size(14).color(TEXT_SECONDARY),
+                text(format!("Connected for: {duration_text}")).size(14).color(TEXT_SECONDARY),
+            ]
+            .spacing(4)
+            .into()
+        } else {
+            text("No client connected").size(14).color(TEXT_MUTED).into()
+        };
+
         let copy_label = if self.copied { "Copied!" } else { "Copy Address" };
 
         let copy_button = if self.tunnel_url.is_some() && !stopping {
@@ -78,7 +106,7 @@ impl HostState {
 
         let buttons = row![copy_button, stop_button].spacing(10);
 
-        let inner = column![title, status_text, url_display, buttons]
+        let inner = column![title, status_text, url_display, client_info, buttons]
             .spacing(20)
             .align_x(Center);
 
@@ -104,6 +132,8 @@ mod tests {
         assert!(state.tunnel_url.is_none());
         assert!(!state.copied);
         assert!(matches!(state.status, HostStatus::Starting));
+        assert!(state.client_addr.is_none());
+        assert!(state.connected_since.is_none());
     }
 
     #[test]
@@ -120,5 +150,14 @@ mod tests {
         let mut state = HostState::new();
         state.status = HostStatus::Error("test error".to_string());
         assert!(matches!(state.status, HostStatus::Error(_)));
+    }
+
+    #[test]
+    fn host_state_with_client() {
+        let mut state = HostState::new();
+        state.client_addr = Some("100.64.0.1:12345".to_string());
+        state.connected_since = Some(Instant::now());
+        assert!(state.client_addr.is_some());
+        assert!(state.connected_since.is_some());
     }
 }

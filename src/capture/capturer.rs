@@ -2,9 +2,16 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::capture::encoder::encode_frame;
-use crate::capture::{CaptureConfig, CaptureEvent};
+use crate::capture::{CaptureCommand, CaptureConfig, CaptureEvent};
 
-pub fn capture_loop(config: CaptureConfig, event_tx: mpsc::Sender<CaptureEvent>) {
+pub fn capture_loop(
+    config: CaptureConfig,
+    event_tx: mpsc::Sender<CaptureEvent>,
+    cmd_rx: mpsc::Receiver<CaptureCommand>,
+) {
+    let mut cmd_rx = cmd_rx;
+    let mut jpeg_quality = config.jpeg_quality;
+
     let display = match scrap::Display::primary() {
         Ok(d) => d,
         Err(e) => {
@@ -26,6 +33,16 @@ pub fn capture_loop(config: CaptureConfig, event_tx: mpsc::Sender<CaptureEvent>)
     let frame_interval = Duration::from_secs(1) / config.fps;
 
     loop {
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                CaptureCommand::SetQuality(q) => jpeg_quality = q,
+                CaptureCommand::Stop => {
+                    let _ = event_tx.blocking_send(CaptureEvent::Stopped);
+                    return;
+                }
+            }
+        }
+
         let start = std::time::Instant::now();
         match capturer.frame() {
             Ok(frame) => {
@@ -42,7 +59,7 @@ pub fn capture_loop(config: CaptureConfig, event_tx: mpsc::Sender<CaptureEvent>)
                     pixels
                 };
 
-                match encode_frame(&bgra, width, height, config.jpeg_quality) {
+                match encode_frame(&bgra, width, height, jpeg_quality) {
                     Ok(frame_data) => {
                         if event_tx.blocking_send(CaptureEvent::Frame(frame_data)).is_err() {
                             break;

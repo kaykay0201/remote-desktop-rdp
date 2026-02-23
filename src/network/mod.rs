@@ -30,6 +30,8 @@ pub enum NetworkEvent {
         height: u32,
         pixels: Vec<u8>,
     },
+    LatencyUpdate { rtt_ms: u64 },
+    ClientInfo { addr: String },
     Error(String),
     Stopped,
 }

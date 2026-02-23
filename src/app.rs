@@ -298,9 +298,7 @@ impl App {
                 }
                 NetworkEvent::Connected(handle) => {
                     self.connection_handle = Some(handle);
-                    let w = 1920u32;
-                    let h = 1080u32;
-                    self.screen = Screen::Viewer(ViewerState::new(w, h));
+                    self.screen = Screen::Viewer(ViewerState::new(1, 1));
                 }
                 NetworkEvent::Frame { width, height, pixels } => {
                     if let Screen::Viewer(state) = &mut self.screen {
@@ -309,7 +307,20 @@ impl App {
                 }
                 NetworkEvent::ClientDisconnected => {
                     if let Screen::Hosting(state) = &mut self.screen {
+                        state.client_addr = None;
+                        state.connected_since = None;
                         state.status = HostStatus::Active;
+                    }
+                }
+                NetworkEvent::LatencyUpdate { rtt_ms } => {
+                    if let Screen::Viewer(state) = &mut self.screen {
+                        state.update_latency(rtt_ms);
+                    }
+                }
+                NetworkEvent::ClientInfo { addr } => {
+                    if let Screen::Hosting(state) = &mut self.screen {
+                        state.client_addr = Some(addr);
+                        state.connected_since = Some(std::time::Instant::now());
                     }
                 }
                 NetworkEvent::Error(e) => {
