@@ -1,7 +1,6 @@
 use iced::widget::{button, column, container, image, mouse_area, row, text};
 use iced::{Element, Fill};
 
-use crate::rdp::RdpConnection;
 use crate::ui::theme::*;
 
 #[derive(Debug, Clone)]
@@ -16,17 +15,15 @@ pub enum ViewerMessage {
 }
 
 pub struct ViewerState {
-    pub connection: RdpConnection,
     pub frame_width: u32,
     pub frame_height: u32,
     pub frame_pixels: Vec<u8>,
 }
 
 impl ViewerState {
-    pub fn new(connection: RdpConnection, width: u32, height: u32) -> Self {
+    pub fn new(width: u32, height: u32) -> Self {
         let size = (width * height * 4) as usize;
         Self {
-            connection,
             frame_width: width,
             frame_height: height,
             frame_pixels: vec![0; size],

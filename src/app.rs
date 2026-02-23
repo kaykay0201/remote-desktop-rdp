@@ -1,113 +1,46 @@
-use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::Duration;
 
 use futures::Stream;
 use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Center, Element, Fill, Subscription, Task, Theme};
 use crate::ui::theme::*;
 
-use crate::cloudflared::{self, DownloadProgress};
-use crate::config::ConnectionProfile;
-use crate::rdp::input::iced_key_to_scancode;
-use crate::rdp::session::rdp_subscription;
-use crate::rdp::{InputCommand, MouseButtonKind, RdpEvent};
-use crate::tunnel::{
-    client_tunnel_subscription, host_tunnel_subscription, ClientTunnelKey, HostTunnelKey,
-    TunnelEvent, TunnelHandle,
-};
+use crate::input_handler::translate::iced_key_to_keycode;
+use crate::network::client::access_client_subscription;
+use crate::network::server::host_server_subscription;
+use crate::network::{ConnectionHandle, NetworkEvent};
+use crate::protocol::{DEFAULT_PORT, ProtocolMessage};
+use crate::tailscale::TailscaleStatus;
 use crate::ui::host::{HostMessage, HostState, HostStatus};
 use crate::ui::login::{LoginMessage, LoginState};
 use crate::ui::mode_select::{ModeSelectMessage, ModeSelectState};
-use crate::ui::setup::{SetupMessage, SetupState, SetupStatus};
 use crate::ui::update::{UpdateBannerState, UpdateMessage, update_banner_view};
 use crate::ui::viewer::{ViewerMessage, ViewerState};
 use crate::updater::{self, ReleaseInfo, UpdateProgress};
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Setup(SetupMessage),
     ModeSelect(ModeSelectMessage),
     Login(LoginMessage),
     Host(HostMessage),
     Viewer(ViewerMessage),
-    RdpEvent(RdpEvent),
-    TunnelEvent(TunnelEvent),
-    ClientTunnelEvent(TunnelEvent),
+    NetworkEvent(NetworkEvent),
+    TailscaleCheck(TailscaleStatus),
     Update(UpdateMessage),
     UpdateCheckResult(Option<ReleaseInfo>),
     CopyError,
-    ClientTunnelReady,
     StopComplete,
-    BackToLogin,
-    InputSent(bool),
+    BackToModeSelect,
+    InputSent(Result<(), String>),
 }
 
 pub enum Screen {
-    Setup(SetupState),
     ModeSelect(ModeSelectState),
     Login(LoginState),
-    Connecting(ConnectionProfile),
+    Connecting,
     Hosting(HostState),
     Viewer(ViewerState),
     Error(String),
-}
-
-#[derive(Clone)]
-struct HashableProfile(ConnectionProfile);
-
-impl Hash for HashableProfile {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hostname.hash(state);
-        self.0.username.hash(state);
-        self.0.proxy_port.hash(state);
-    }
-}
-
-fn build_rdp_stream(
-    profile: &HashableProfile,
-) -> Pin<Box<dyn Stream<Item = RdpEvent> + Send>> {
-    Box::pin(rdp_subscription(profile.0.clone()))
-}
-
-#[derive(Clone, Hash)]
-struct DownloadKey;
-
-fn download_cloudflared_stream(
-    _key: &DownloadKey,
-) -> Pin<Box<dyn Stream<Item = SetupMessage> + Send>> {
-    use iced::futures::SinkExt;
-
-    Box::pin(iced::stream::channel(32, async move |mut output| {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-        let download_handle =
-            tokio::spawn(async move { cloudflared::download_cloudflared(tx).await });
-
-        while let Some(progress) = rx.recv().await {
-            let _ = output
-                .send(SetupMessage::DownloadProgress(progress))
-                .await;
-        }
-
-        match download_handle.await {
-            Ok(Ok(path)) => {
-                let _ = output.send(SetupMessage::DownloadComplete(path)).await;
-            }
-            Ok(Err(e)) => {
-                let _ = output
-                    .send(SetupMessage::DownloadProgress(DownloadProgress::Error(e)))
-                    .await;
-            }
-            Err(e) => {
-                let _ = output
-                    .send(SetupMessage::DownloadProgress(DownloadProgress::Error(
-                        format!("Download task failed: {e}"),
-                    )))
-                    .await;
-            }
-        }
-    }))
 }
 
 #[derive(Clone, Hash)]
@@ -153,14 +86,12 @@ fn download_update_stream(
 
 pub struct App {
     screen: Screen,
-    cloudflared_path: Option<PathBuf>,
-    downloading_cloudflared: bool,
-    profile: Option<ConnectionProfile>,
-    tunnel_handle: Option<TunnelHandle>,
-    tunnel_url: Option<String>,
+    tailscale_status: TailscaleStatus,
     hosting: bool,
-    client_tunnel_active: bool,
-    pending_profile: Option<ConnectionProfile>,
+    connecting: bool,
+    connect_host: Option<String>,
+    connect_port: u16,
+    connection_handle: Option<ConnectionHandle>,
     update_banner: UpdateBannerState,
 }
 
@@ -169,32 +100,28 @@ impl App {
         updater::cleanup_old_update();
         updater::check_post_update_health();
 
-        let cloudflared_path = cloudflared::cloudflared_path();
-        let screen = if cloudflared_path.is_some() {
-            Screen::ModeSelect(ModeSelectState::new())
-        } else {
-            Screen::Setup(SetupState::new())
-        };
-
         let update_task = Task::perform(
             async { updater::check_for_update().await.ok().flatten() },
             Message::UpdateCheckResult,
         );
 
+        let tailscale_task = Task::perform(
+            crate::tailscale::check_tailscale(),
+            Message::TailscaleCheck,
+        );
+
         (
             Self {
-                screen,
-                cloudflared_path,
-                downloading_cloudflared: false,
-                profile: None,
-                tunnel_handle: None,
-                tunnel_url: None,
+                screen: Screen::ModeSelect(ModeSelectState::new()),
+                tailscale_status: TailscaleStatus::default(),
                 hosting: false,
-                client_tunnel_active: false,
-                pending_profile: None,
+                connecting: false,
+                connect_host: None,
+                connect_port: DEFAULT_PORT,
+                connection_handle: None,
                 update_banner: UpdateBannerState::Hidden,
             },
-            update_task,
+            Task::batch([update_task, tailscale_task]),
         )
     }
 
@@ -204,47 +131,9 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Setup(msg) => match msg {
-                SetupMessage::StartDownload | SetupMessage::RetryDownload => {
-                    if let Screen::Setup(state) = &mut self.screen {
-                        state.status = SetupStatus::Downloading {
-                            downloaded: 0,
-                            total: 0,
-                        };
-                    }
-                    self.downloading_cloudflared = true;
-                }
-                SetupMessage::DownloadProgress(progress) => {
-                    if let Screen::Setup(state) = &mut self.screen {
-                        match &progress {
-                            DownloadProgress::Started { total_bytes } => {
-                                state.status = SetupStatus::Downloading {
-                                    downloaded: 0,
-                                    total: *total_bytes,
-                                };
-                            }
-                            DownloadProgress::Progress { downloaded, total } => {
-                                state.status =
-                                    SetupStatus::Downloading { downloaded: *downloaded, total: *total };
-                            }
-                            DownloadProgress::Finished(path) => {
-                                self.cloudflared_path = Some(path.clone());
-                                self.downloading_cloudflared = false;
-                                self.screen = self.mode_select_screen();
-                            }
-                            DownloadProgress::Error(e) => {
-                                state.status = SetupStatus::Error(e.clone());
-                                self.downloading_cloudflared = false;
-                            }
-                        }
-                    }
-                }
-                SetupMessage::DownloadComplete(path) => {
-                    self.cloudflared_path = Some(path);
-                    self.downloading_cloudflared = false;
-                    self.screen = self.mode_select_screen();
-                }
-            },
+            Message::TailscaleCheck(status) => {
+                self.tailscale_status = status;
+            }
             Message::UpdateCheckResult(opt) => {
                 if let Some(release) = opt {
                     self.update_banner = UpdateBannerState::Available(release);
@@ -362,50 +251,21 @@ impl App {
                     return Task::none();
                 }
                 if let Screen::Login(state) = &mut self.screen
-                    && let Some((tunnel_url, profile)) = state.update(msg)
+                    && let Some(profile) = state.update(msg)
                 {
-                    self.tunnel_url = Some(tunnel_url);
-                    self.pending_profile = Some(profile.clone());
-                    self.client_tunnel_active = true;
-                    let proxy_port = profile.proxy_port;
-                    self.screen = Screen::Connecting(profile);
-                    return Task::perform(
-                        async move {
-                            let addr = format!("localhost:{proxy_port}");
-                            let deadline =
-                                tokio::time::Instant::now() + Duration::from_secs(15);
-                            loop {
-                                if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
-                                    return Ok(());
-                                }
-                                if tokio::time::Instant::now() > deadline {
-                                    return Err(
-                                        "Tunnel proxy did not start within 15 seconds"
-                                            .to_string(),
-                                    );
-                                }
-                                tokio::time::sleep(Duration::from_millis(300)).await;
-                            }
-                        },
-                        |result: Result<(), String>| match result {
-                            Ok(()) => Message::ClientTunnelReady,
-                            Err(e) => Message::ClientTunnelEvent(TunnelEvent::Error(e)),
-                        },
-                    );
-                }
-            }
-            Message::ClientTunnelReady => {
-                if let Some(profile) = self.pending_profile.take() {
-                    self.profile = Some(profile);
+                    self.connect_host = Some(profile.host_ip.clone());
+                    self.connect_port = profile.port;
+                    self.connecting = true;
+                    self.screen = Screen::Connecting;
                 }
             }
             Message::Host(msg) => match msg {
                 HostMessage::CopyUrl => {
                     if let Screen::Hosting(state) = &mut self.screen {
                         state.copied = true;
-                        if let Some(ref url) = state.tunnel_url {
-                            return iced::clipboard::write(url.clone());
+                        if let Some(ref ip) = self.tailscale_status.ip {
+                            let addr = format!("{ip}:{}", DEFAULT_PORT);
+                            return iced::clipboard::write(addr);
                         }
                     }
                 }
@@ -413,189 +273,163 @@ impl App {
                     if let Screen::Hosting(state) = &mut self.screen {
                         state.status = HostStatus::Stopping;
                     }
-                    if let Some(mut handle) = self.tunnel_handle.take() {
-                        drop(tokio::spawn(async move { handle.stop().await }));
-                    }
-                }
-            },
-            Message::TunnelEvent(event) => match event {
-                TunnelEvent::HandleReady(handle) => {
-                    self.tunnel_handle = Some(handle);
-                }
-                TunnelEvent::UrlReady(url) => {
-                    if let Screen::Hosting(state) = &mut self.screen {
-                        state.tunnel_url = Some(url);
-                        state.status = HostStatus::Active;
-                    }
-                }
-                TunnelEvent::Error(e) => {
-                    if let Some(mut handle) = self.tunnel_handle.take() {
-                        drop(tokio::spawn(async move { handle.stop().await }));
-                    }
-                    self.hosting = false;
-                    self.screen = Screen::Error(e);
-                }
-                TunnelEvent::Stopped => {
-                    self.tunnel_handle = None;
                     self.hosting = false;
                     return Task::perform(
-                        async { tokio::time::sleep(Duration::from_secs(1)).await },
+                        async { tokio::time::sleep(std::time::Duration::from_secs(1)).await },
                         |_| Message::StopComplete,
                     );
                 }
-                TunnelEvent::Output(_) => {}
             },
-            Message::ClientTunnelEvent(event) => match event {
-                TunnelEvent::HandleReady(handle) => {
-                    self.tunnel_handle = Some(handle);
-                }
-                TunnelEvent::Error(e) => {
-                    self.client_tunnel_active = false;
-                    self.pending_profile = None;
-                    if let Some(mut handle) = self.tunnel_handle.take() {
-                        drop(tokio::spawn(async move { handle.stop().await }));
-                    }
-                    self.screen = Screen::Error(e);
-                }
-                TunnelEvent::Stopped => {
-                    self.client_tunnel_active = false;
-                    self.tunnel_handle = None;
-                    if matches!(self.screen, Screen::Connecting(_)) {
-                        self.pending_profile = None;
-                        self.screen = Screen::Error(
-                            "Tunnel connection closed unexpectedly".to_string(),
-                        );
+            Message::NetworkEvent(event) => match event {
+                NetworkEvent::Listening { port } => {
+                    if let Screen::Hosting(state) = &mut self.screen {
+                        if let Some(ref ip) = self.tailscale_status.ip {
+                            state.tunnel_url = Some(format!("{ip}:{port}"));
+                        } else {
+                            state.tunnel_url = Some(format!("0.0.0.0:{port}"));
+                        }
+                        state.status = HostStatus::Active;
                     }
                 }
-                TunnelEvent::UrlReady(_) | TunnelEvent::Output(_) => {}
-            },
-            Message::RdpEvent(event) => match event {
-                RdpEvent::Connected(conn) => {
-                    let (w, h) = match &self.screen {
-                        Screen::Connecting(p) => (p.width as u32, p.height as u32),
-                        _ => (1920, 1080),
-                    };
-                    self.screen = Screen::Viewer(ViewerState::new(conn, w, h));
+                NetworkEvent::ClientConnected => {
+                    if let Screen::Hosting(state) = &mut self.screen {
+                        state.status = HostStatus::Active;
+                    }
                 }
-                RdpEvent::Frame {
-                    width,
-                    height,
-                    pixels,
-                } => {
+                NetworkEvent::Connected(handle) => {
+                    self.connection_handle = Some(handle);
+                    let w = 1920u32;
+                    let h = 1080u32;
+                    self.screen = Screen::Viewer(ViewerState::new(w, h));
+                }
+                NetworkEvent::Frame { width, height, pixels } => {
                     if let Screen::Viewer(state) = &mut self.screen {
                         state.update_frame(width, height, pixels);
                     }
                 }
-                RdpEvent::Error(e) => {
-                    self.profile = None;
-                    self.client_tunnel_active = false;
-                    if let Some(mut handle) = self.tunnel_handle.take() {
-                        drop(tokio::spawn(async move { handle.stop().await }));
+                NetworkEvent::ClientDisconnected => {
+                    if let Screen::Hosting(state) = &mut self.screen {
+                        state.status = HostStatus::Active;
                     }
+                }
+                NetworkEvent::Error(e) => {
+                    self.connecting = false;
+                    self.hosting = false;
+                    self.connection_handle = None;
+                    self.connect_host = None;
                     self.screen = Screen::Error(e);
                 }
-                RdpEvent::Disconnected => {
-                    self.profile = None;
-                    self.client_tunnel_active = false;
-                    if let Some(mut handle) = self.tunnel_handle.take() {
-                        drop(tokio::spawn(async move { handle.stop().await }));
+                NetworkEvent::Stopped => {
+                    if self.connecting {
+                        self.connecting = false;
+                        self.connection_handle = None;
+                        self.connect_host = None;
+                        self.screen = Screen::Error("Connection closed".to_string());
                     }
-                    self.screen = Screen::Login(LoginState::new());
                 }
-                RdpEvent::StatusChanged(_) => {}
             },
             Message::Viewer(msg) => {
-                if let Screen::Viewer(state) = &mut self.screen {
+                if let Screen::Viewer(_state) = &mut self.screen {
                     match &msg {
                         ViewerMessage::Disconnect => {
-                            let mut conn = state.connection.clone();
-                            self.profile = None;
-                            self.client_tunnel_active = false;
-                            if let Some(mut handle) = self.tunnel_handle.take() {
-                                drop(tokio::spawn(async move { handle.stop().await }));
+                            if let Some(handle) = &self.connection_handle {
+                                let handle = handle.clone();
+                                drop(tokio::spawn(async move {
+                                    let _ = handle.send_input(ProtocolMessage::Disconnect).await;
+                                }));
                             }
+                            self.connecting = false;
+                            self.connection_handle = None;
+                            self.connect_host = None;
                             self.screen = Screen::Login(LoginState::new());
-                            return Task::perform(
-                                async move {
-                                    conn.send(InputCommand::Disconnect).await
-                                },
-                                Message::InputSent,
-                            );
                         }
                         ViewerMessage::MouseMoved(point) => {
-                            let mut conn = state.connection.clone();
-                            let x = point.x as u16;
-                            let y = point.y as u16;
-                            return Task::perform(
-                                async move {
-                                    conn.send(InputCommand::MouseMoved { x, y }).await
-                                },
-                                Message::InputSent,
-                            );
-                        }
-                        ViewerMessage::MousePressed(btn) => {
-                            let kind = match btn {
-                                iced::mouse::Button::Left => MouseButtonKind::Left,
-                                iced::mouse::Button::Right => MouseButtonKind::Right,
-                                iced::mouse::Button::Middle => MouseButtonKind::Middle,
-                                _ => return Task::none(),
-                            };
-                            let mut conn = state.connection.clone();
-                            return Task::perform(
-                                async move {
-                                    conn.send(InputCommand::MouseButtonPressed(kind))
-                                        .await
-                                },
-                                Message::InputSent,
-                            );
-                        }
-                        ViewerMessage::MouseReleased(btn) => {
-                            let kind = match btn {
-                                iced::mouse::Button::Left => MouseButtonKind::Left,
-                                iced::mouse::Button::Right => MouseButtonKind::Right,
-                                iced::mouse::Button::Middle => MouseButtonKind::Middle,
-                                _ => return Task::none(),
-                            };
-                            let mut conn = state.connection.clone();
-                            return Task::perform(
-                                async move {
-                                    conn.send(InputCommand::MouseButtonReleased(kind))
-                                        .await
-                                },
-                                Message::InputSent,
-                            );
-                        }
-                        ViewerMessage::MouseWheel(delta) => {
-                            let d = *delta as i16;
-                            let mut conn = state.connection.clone();
-                            return Task::perform(
-                                async move {
-                                    conn.send(InputCommand::MouseWheel {
-                                        vertical: true,
-                                        delta: d,
-                                    })
-                                    .await
-                                },
-                                Message::InputSent,
-                            );
-                        }
-                        ViewerMessage::KeyPressed(key) => {
-                            if let Some(scancode) = iced_key_to_scancode(key) {
-                                let mut conn = state.connection.clone();
+                            if let Some(handle) = &self.connection_handle {
+                                let handle = handle.clone();
+                                let x = point.x as u16;
+                                let y = point.y as u16;
                                 return Task::perform(
                                     async move {
-                                        conn.send(InputCommand::KeyPressed { scancode }).await
+                                        handle.send_input(ProtocolMessage::MouseMove { x, y }).await
+                                    },
+                                    Message::InputSent,
+                                );
+                            }
+                        }
+                        ViewerMessage::MousePressed(btn) => {
+                            if let Some(protocol_btn) = crate::input_handler::translate::mouse_button_to_protocol(btn)
+                                && let Some(handle) = &self.connection_handle
+                            {
+                                let handle = handle.clone();
+                                return Task::perform(
+                                    async move {
+                                        handle.send_input(ProtocolMessage::MouseButton {
+                                            button: protocol_btn,
+                                            pressed: true,
+                                        }).await
+                                    },
+                                    Message::InputSent,
+                                );
+                            }
+                        }
+                        ViewerMessage::MouseReleased(btn) => {
+                            if let Some(protocol_btn) = crate::input_handler::translate::mouse_button_to_protocol(btn)
+                                && let Some(handle) = &self.connection_handle
+                            {
+                                let handle = handle.clone();
+                                return Task::perform(
+                                    async move {
+                                        handle.send_input(ProtocolMessage::MouseButton {
+                                            button: protocol_btn,
+                                            pressed: false,
+                                        }).await
+                                    },
+                                    Message::InputSent,
+                                );
+                            }
+                        }
+                        ViewerMessage::MouseWheel(delta) => {
+                            if let Some(handle) = &self.connection_handle {
+                                let handle = handle.clone();
+                                let d = *delta as i16;
+                                return Task::perform(
+                                    async move {
+                                        handle.send_input(ProtocolMessage::MouseScroll {
+                                            delta_x: 0,
+                                            delta_y: d,
+                                        }).await
+                                    },
+                                    Message::InputSent,
+                                );
+                            }
+                        }
+                        ViewerMessage::KeyPressed(key) => {
+                            if let Some(keycode) = iced_key_to_keycode(key)
+                                && let Some(handle) = &self.connection_handle
+                            {
+                                let handle = handle.clone();
+                                return Task::perform(
+                                    async move {
+                                        handle.send_input(ProtocolMessage::KeyEvent {
+                                            keycode,
+                                            pressed: true,
+                                        }).await
                                     },
                                     Message::InputSent,
                                 );
                             }
                         }
                         ViewerMessage::KeyReleased(key) => {
-                            if let Some(scancode) = iced_key_to_scancode(key) {
-                                let mut conn = state.connection.clone();
+                            if let Some(keycode) = iced_key_to_keycode(key)
+                                && let Some(handle) = &self.connection_handle
+                            {
+                                let handle = handle.clone();
                                 return Task::perform(
                                     async move {
-                                        conn.send(InputCommand::KeyReleased { scancode }).await
+                                        handle.send_input(ProtocolMessage::KeyEvent {
+                                            keycode,
+                                            pressed: false,
+                                        }).await
                                     },
                                     Message::InputSent,
                                 );
@@ -612,12 +446,11 @@ impl App {
                     return iced::clipboard::write(e.clone());
                 }
             }
-            Message::BackToLogin => {
-                self.profile = None;
-                self.client_tunnel_active = false;
-                if let Some(mut handle) = self.tunnel_handle.take() {
-                    drop(tokio::spawn(async move { handle.stop().await }));
-                }
+            Message::BackToModeSelect => {
+                self.connecting = false;
+                self.hosting = false;
+                self.connection_handle = None;
+                self.connect_host = None;
                 self.screen = self.mode_select_screen();
             }
             Message::InputSent(_) => {}
@@ -629,13 +462,12 @@ impl App {
         let banner = update_banner_view(&self.update_banner).map(Message::Update);
 
         let screen_content: Element<'_, Message> = match &self.screen {
-            Screen::Setup(state) => state.view().map(Message::Setup),
             Screen::ModeSelect(state) => state.view().map(Message::ModeSelect),
             Screen::Login(state) => state.view().map(Message::Login),
-            Screen::Connecting(_) => {
+            Screen::Connecting => {
                 let inner = column![
                     text("Connecting...").size(24).color(TEXT_PRIMARY),
-                    text("Starting tunnel proxy...").size(14).color(TEXT_SECONDARY),
+                    text("Establishing connection via Tailscale...").size(14).color(TEXT_SECONDARY),
                 ]
                 .spacing(12)
                 .align_x(Center);
@@ -674,7 +506,7 @@ impl App {
                         .style(secondary_button_style)
                         .padding([10, 20]),
                     button("Back")
-                        .on_press(Message::BackToLogin)
+                        .on_press(Message::BackToModeSelect)
                         .style(secondary_button_style)
                         .padding([10, 20]),
                 ]
@@ -705,39 +537,19 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let host_tunnel_sub = if self.hosting {
-            if let Some(ref path) = self.cloudflared_path {
-                let key = HostTunnelKey {
-                    cloudflared_path: path.clone(),
-                };
-                Subscription::run_with(key, host_tunnel_subscription)
-                    .map(Message::TunnelEvent)
-            } else {
-                Subscription::none()
-            }
+        let host_sub = if self.hosting {
+            host_server_subscription(DEFAULT_PORT).map(Message::NetworkEvent)
         } else {
             Subscription::none()
         };
 
-        let client_tunnel_sub = if self.client_tunnel_active {
-            if let (Some(url), Some(path)) = (&self.tunnel_url, &self.cloudflared_path) {
-                let key = ClientTunnelKey {
-                    tunnel_url: url.clone(),
-                    local_port: 13389,
-                    cloudflared_path: path.clone(),
-                };
-                Subscription::run_with(key, client_tunnel_subscription)
-                    .map(Message::ClientTunnelEvent)
+        let client_sub = if self.connecting {
+            if let Some(ref host) = self.connect_host {
+                access_client_subscription(host.clone(), self.connect_port)
+                    .map(Message::NetworkEvent)
             } else {
                 Subscription::none()
             }
-        } else {
-            Subscription::none()
-        };
-
-        let rdp_sub = if let Some(profile) = &self.profile {
-            Subscription::run_with(HashableProfile(profile.clone()), build_rdp_stream)
-                .map(Message::RdpEvent)
         } else {
             Subscription::none()
         };
@@ -751,16 +563,9 @@ impl App {
                     iced::keyboard::Event::KeyReleased { key, .. } => {
                         Message::Viewer(ViewerMessage::KeyReleased(key))
                     }
-                    iced::keyboard::Event::ModifiersChanged(_) => Message::InputSent(true),
+                    iced::keyboard::Event::ModifiersChanged(_) => Message::InputSent(Ok(())),
                 }),
             _ => Subscription::none(),
-        };
-
-        let download_sub = if self.downloading_cloudflared {
-            Subscription::run_with(DownloadKey, download_cloudflared_stream)
-                .map(Message::Setup)
-        } else {
-            Subscription::none()
         };
 
         let update_download_sub =
@@ -777,12 +582,10 @@ impl App {
             };
 
         Subscription::batch([
-            download_sub,
-            update_download_sub,
-            host_tunnel_sub,
-            client_tunnel_sub,
-            rdp_sub,
+            host_sub,
+            client_sub,
             keyboard_sub,
+            update_download_sub,
         ])
     }
 

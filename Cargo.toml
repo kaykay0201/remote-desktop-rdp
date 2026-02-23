@@ -5,11 +5,7 @@ edition = "2024"
 
 [dependencies]
 iced = { version = "0.14", features = ["tokio", "image", "advanced"] }
-ironrdp = { version = "0.14", features = ["connector", "session", "input", "graphics", "dvc", "svc", "cliprdr", "displaycontrol", "rdpdr", "rdpsnd"] }
-ironrdp-tokio = { version = "0.8", features = ["reqwest"] }
 tokio = { version = "1", features = ["full"] }
-tokio-native-tls = "0.3"
-native-tls = "0.2"
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -17,12 +13,26 @@ toml = "0.8"
 futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-smallvec = "1"
 reqwest = { version = "0.12", features = ["stream", "json"] }
 dirs-next = "2"
-which = "7"
 self-replace = "1"
 sha2 = "0.10"
+
+# Protocol
+bincode = { version = "2", features = ["serde"] }
+lz4_flex = "0.11"
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+
+# Screen capture
+scrap = "0.5"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+# Input simulation
+enigo = "0.6"
+
+# JSON parsing (tailscale status)
+serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects"] }

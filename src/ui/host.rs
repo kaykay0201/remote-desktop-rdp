@@ -39,24 +39,24 @@ impl HostState {
         let stopping = matches!(self.status, HostStatus::Stopping);
 
         let status_text = match &self.status {
-            HostStatus::Starting => text("Starting tunnel...").size(16).color(TEXT_SECONDARY),
-            HostStatus::Active => text("Tunnel active").size(16).color(SUCCESS),
-            HostStatus::Stopping => text("Stopping tunnel...").size(16).color(TEXT_SECONDARY),
+            HostStatus::Starting => text("Starting server...").size(16).color(TEXT_SECONDARY),
+            HostStatus::Active => text("Server active — accepting connections").size(16).color(SUCCESS),
+            HostStatus::Stopping => text("Stopping server...").size(16).color(TEXT_SECONDARY),
             HostStatus::Error(e) => text(format!("Error: {e}")).size(16).color(DANGER),
         };
 
-        let url_display: Element<'_, HostMessage> = if let Some(ref url) = self.tunnel_url {
+        let url_display: Element<'_, HostMessage> = if let Some(ref addr) = self.tunnel_url {
             container(
-                text(url.as_str()).size(16).color(ACCENT_HOVER),
+                text(addr.as_str()).size(16).color(ACCENT_HOVER),
             )
             .style(url_container_style)
             .padding([8, 16])
             .into()
         } else {
-            text("Waiting for tunnel URL...").size(14).color(TEXT_MUTED).into()
+            text("Waiting for server to start...").size(14).color(TEXT_MUTED).into()
         };
 
-        let copy_label = if self.copied { "Copied!" } else { "Copy URL" };
+        let copy_label = if self.copied { "Copied!" } else { "Copy Address" };
 
         let copy_button = if self.tunnel_url.is_some() && !stopping {
             button(text(copy_label))
@@ -107,9 +107,9 @@ mod tests {
     }
 
     #[test]
-    fn host_state_with_url() {
+    fn host_state_with_address() {
         let mut state = HostState::new();
-        state.tunnel_url = Some("https://test.trycloudflare.com".to_string());
+        state.tunnel_url = Some("100.64.0.1:9867".to_string());
         state.status = HostStatus::Active;
         assert!(state.tunnel_url.is_some());
         assert!(matches!(state.status, HostStatus::Active));

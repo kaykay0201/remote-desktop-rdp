@@ -1,29 +1,32 @@
 use std::io;
 
-pub type Result<T> = std::result::Result<T, RdpError>;
+pub type Result<T> = std::result::Result<T, AppError>;
 
 #[derive(Debug, thiserror::Error)]
-pub enum RdpError {
+pub enum AppError {
     #[error("connection failed: {0}")]
     Connection(String),
 
-    #[error("authentication failed: {0}")]
-    Authentication(String),
+    #[error("capture error: {0}")]
+    Capture(String),
 
-    #[error("session error: {0}")]
-    Session(String),
+    #[error("encoding error: {0}")]
+    Encoding(String),
 
-    #[error("TLS error: {0}")]
-    Tls(String),
+    #[error("network error: {0}")]
+    Network(String),
 
-    #[error("protocol error: {0}")]
-    Protocol(String),
+    #[error("input error: {0}")]
+    Input(String),
 
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
     #[error("config error: {0}")]
     Config(String),
+
+    #[error("tailscale error: {0}")]
+    Tailscale(String),
 
     #[error("disconnected")]
     Disconnected,
@@ -35,27 +38,27 @@ mod tests {
 
     #[test]
     fn display_connection_error() {
-        let err = RdpError::Connection("timeout".to_string());
+        let err = AppError::Connection("timeout".to_string());
         assert_eq!(err.to_string(), "connection failed: timeout");
     }
 
     #[test]
-    fn display_auth_error() {
-        let err = RdpError::Authentication("bad password".to_string());
-        assert_eq!(err.to_string(), "authentication failed: bad password");
+    fn display_capture_error() {
+        let err = AppError::Capture("no display".to_string());
+        assert_eq!(err.to_string(), "capture error: no display");
     }
 
     #[test]
-    fn display_tls_error() {
-        let err = RdpError::Tls("cert invalid".to_string());
-        assert_eq!(err.to_string(), "TLS error: cert invalid");
+    fn display_network_error() {
+        let err = AppError::Network("port in use".to_string());
+        assert_eq!(err.to_string(), "network error: port in use");
     }
 
     #[test]
     fn from_io_error() {
         let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "refused");
-        let rdp_err: RdpError = io_err.into();
-        assert!(matches!(rdp_err, RdpError::Io(_)));
-        assert!(rdp_err.to_string().contains("refused"));
+        let app_err: AppError = io_err.into();
+        assert!(matches!(app_err, AppError::Io(_)));
+        assert!(app_err.to_string().contains("refused"));
     }
 }

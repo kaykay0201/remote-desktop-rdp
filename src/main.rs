@@ -1,12 +1,14 @@
 #![windows_subsystem = "windows"]
 
 mod app;
-mod cloudflared;
+mod capture;
 mod config;
 mod error;
+mod input_handler;
+mod network;
 mod process;
-mod rdp;
-mod tunnel;
+mod protocol;
+mod tailscale;
 mod ui;
 mod updater;
 

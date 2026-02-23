@@ -1,54 +1,39 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::error::{RdpError, Result};
+use crate::error::{AppError, Result};
+use crate::protocol::DEFAULT_PORT;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionProfile {
-    pub hostname: String,
-    pub username: String,
-    #[serde(skip)]
-    pub password: String,
-    #[serde(default = "default_width")]
-    pub width: u16,
-    #[serde(default = "default_height")]
-    pub height: u16,
-    #[serde(default = "default_proxy_port")]
-    pub proxy_port: u16,
+    pub host_ip: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub display_name: String,
 }
 
-fn default_width() -> u16 {
-    1920
-}
-
-fn default_height() -> u16 {
-    1080
-}
-
-fn default_proxy_port() -> u16 {
-    3390
+fn default_port() -> u16 {
+    DEFAULT_PORT
 }
 
 impl Default for ConnectionProfile {
     fn default() -> Self {
         Self {
-            hostname: String::new(),
-            username: String::new(),
-            password: String::new(),
-            width: default_width(),
-            height: default_height(),
-            proxy_port: default_proxy_port(),
+            host_ip: String::new(),
+            port: default_port(),
+            display_name: String::new(),
         }
     }
 }
 
 impl ConnectionProfile {
     pub fn server_addr(&self) -> String {
-        format!("localhost:{}", self.proxy_port)
+        format!("{}:{}", self.host_ip, self.port)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        let content = toml::to_string_pretty(self).map_err(|e| RdpError::Config(e.to_string()))?;
+        let content = toml::to_string_pretty(self).map_err(|e| AppError::Config(e.to_string()))?;
         std::fs::write(path, content)?;
         Ok(())
     }
@@ -56,7 +41,7 @@ impl ConnectionProfile {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let profile: Self =
-            toml::from_str(&content).map_err(|e| RdpError::Config(e.to_string()))?;
+            toml::from_str(&content).map_err(|e| AppError::Config(e.to_string()))?;
         Ok(profile)
     }
 }
@@ -68,48 +53,40 @@ mod tests {
     #[test]
     fn default_profile_values() {
         let profile = ConnectionProfile::default();
-        assert_eq!(profile.width, 1920);
-        assert_eq!(profile.height, 1080);
-        assert_eq!(profile.proxy_port, 3390);
-        assert!(profile.hostname.is_empty());
-        assert!(profile.username.is_empty());
-        assert!(profile.password.is_empty());
+        assert_eq!(profile.port, DEFAULT_PORT);
+        assert!(profile.host_ip.is_empty());
+        assert!(profile.display_name.is_empty());
     }
 
     #[test]
     fn server_addr_format() {
         let mut profile = ConnectionProfile::default();
-        profile.proxy_port = 5555;
-        assert_eq!(profile.server_addr(), "localhost:5555");
+        profile.host_ip = "100.64.0.1".to_string();
+        profile.port = 9867;
+        assert_eq!(profile.server_addr(), "100.64.0.1:9867");
     }
 
     #[test]
-    fn serialize_excludes_password() {
+    fn serialize_round_trip() {
         let mut profile = ConnectionProfile::default();
-        profile.hostname = "test.example.com".to_string();
-        profile.password = "secret123".to_string();
-        let serialized = toml::to_string(&profile).unwrap();
-        assert!(!serialized.contains("secret123"));
-        assert!(serialized.contains("test.example.com"));
-    }
-
-    #[test]
-    fn deserialize_round_trip() {
-        let mut profile = ConnectionProfile::default();
-        profile.hostname = "myhost".to_string();
-        profile.username = "admin".to_string();
-        profile.width = 1280;
-        profile.height = 720;
-        profile.proxy_port = 3391;
+        profile.host_ip = "100.64.0.1".to_string();
+        profile.display_name = "My PC".to_string();
+        profile.port = 9867;
 
         let serialized = toml::to_string(&profile).unwrap();
         let deserialized: ConnectionProfile = toml::from_str(&serialized).unwrap();
 
-        assert_eq!(deserialized.hostname, "myhost");
-        assert_eq!(deserialized.username, "admin");
-        assert_eq!(deserialized.width, 1280);
-        assert_eq!(deserialized.height, 720);
-        assert_eq!(deserialized.proxy_port, 3391);
-        assert!(deserialized.password.is_empty());
+        assert_eq!(deserialized.host_ip, "100.64.0.1");
+        assert_eq!(deserialized.display_name, "My PC");
+        assert_eq!(deserialized.port, 9867);
+    }
+
+    #[test]
+    fn deserialize_with_defaults() {
+        let toml_str = r#"host_ip = "10.0.0.1""#;
+        let profile: ConnectionProfile = toml::from_str(toml_str).unwrap();
+        assert_eq!(profile.host_ip, "10.0.0.1");
+        assert_eq!(profile.port, DEFAULT_PORT);
+        assert!(profile.display_name.is_empty());
     }
 }

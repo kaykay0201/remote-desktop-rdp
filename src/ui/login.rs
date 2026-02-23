@@ -2,74 +2,49 @@ use iced::widget::{button, column, container, row, text, text_input};
 use iced::{Center, Element, Fill};
 
 use crate::config::ConnectionProfile;
+use crate::protocol::DEFAULT_PORT;
 use crate::ui::theme::*;
-
-const LOCAL_TUNNEL_PORT: u16 = 13389;
 
 #[derive(Debug, Clone)]
 pub enum LoginMessage {
-    TunnelUrlChanged(String),
-    UsernameChanged(String),
-    PasswordChanged(String),
-    WidthChanged(String),
-    HeightChanged(String),
+    HostIpChanged(String),
+    PortChanged(String),
+    DisplayNameChanged(String),
     Connect,
     BackToModeSelect,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct LoginState {
-    pub tunnel_url: String,
-    pub username: String,
-    pub password: String,
-    pub width: String,
-    pub height: String,
+    pub host_ip: String,
+    pub port: String,
+    pub display_name: String,
 }
 
 impl LoginState {
     pub fn new() -> Self {
-        let defaults = ConnectionProfile::default();
         Self {
-            tunnel_url: String::new(),
-            username: String::new(),
-            password: String::new(),
-            width: defaults.width.to_string(),
-            height: defaults.height.to_string(),
+            host_ip: String::new(),
+            port: DEFAULT_PORT.to_string(),
+            display_name: String::new(),
         }
     }
 
-    pub fn update(&mut self, msg: LoginMessage) -> Option<(String, ConnectionProfile)> {
+    pub fn update(&mut self, msg: LoginMessage) -> Option<ConnectionProfile> {
         match msg {
-            LoginMessage::TunnelUrlChanged(s) => self.tunnel_url = s,
-            LoginMessage::UsernameChanged(s) => self.username = s,
-            LoginMessage::PasswordChanged(s) => self.password = s,
-            LoginMessage::WidthChanged(s) => self.width = s,
-            LoginMessage::HeightChanged(s) => self.height = s,
+            LoginMessage::HostIpChanged(s) => self.host_ip = s,
+            LoginMessage::PortChanged(s) => self.port = s,
+            LoginMessage::DisplayNameChanged(s) => self.display_name = s,
             LoginMessage::Connect => {
-                if self.tunnel_url.is_empty() {
+                if self.host_ip.is_empty() {
                     return None;
                 }
-                if self.username.is_empty() {
-                    return None;
-                }
-                let width = match self.width.parse::<u16>() {
-                    Ok(w) => w,
-                    Err(_) => return None,
-                };
-                let height = match self.height.parse::<u16>() {
-                    Ok(h) => h,
-                    Err(_) => return None,
-                };
-                let tunnel_url = self.tunnel_url.clone();
-                let profile = ConnectionProfile {
-                    hostname: "localhost".to_string(),
-                    username: self.username.clone(),
-                    password: self.password.clone(),
-                    width,
-                    height,
-                    proxy_port: LOCAL_TUNNEL_PORT,
-                };
-                return Some((tunnel_url, profile));
+                let port = self.port.parse::<u16>().unwrap_or(DEFAULT_PORT);
+                return Some(ConnectionProfile {
+                    host_ip: self.host_ip.clone(),
+                    port,
+                    display_name: self.display_name.clone(),
+                });
             }
             LoginMessage::BackToModeSelect => {}
         }
@@ -79,33 +54,22 @@ impl LoginState {
     pub fn view(&self) -> Element<'_, LoginMessage> {
         let title = text("Connect to Remote").size(28).color(TEXT_PRIMARY);
 
-        let tunnel_url_input = text_input("Tunnel URL (https://xxx.trycloudflare.com)", &self.tunnel_url)
-            .on_input(LoginMessage::TunnelUrlChanged)
+        let host_ip_input = text_input("Tailscale IP (e.g. 100.64.0.1)", &self.host_ip)
+            .on_input(LoginMessage::HostIpChanged)
             .style(input_style)
             .padding(10);
 
-        let username_input = text_input("Username", &self.username)
-            .on_input(LoginMessage::UsernameChanged)
+        let port_input = text_input("Port", &self.port)
+            .on_input(LoginMessage::PortChanged)
             .style(input_style)
             .padding(10);
 
-        let password_input = text_input("Password", &self.password)
-            .on_input(LoginMessage::PasswordChanged)
-            .secure(true)
+        let name_input = text_input("Display Name (optional)", &self.display_name)
+            .on_input(LoginMessage::DisplayNameChanged)
             .style(input_style)
             .padding(10);
 
-        let width_input = text_input("Width", &self.width)
-            .on_input(LoginMessage::WidthChanged)
-            .style(input_style)
-            .padding(10);
-
-        let height_input = text_input("Height", &self.height)
-            .on_input(LoginMessage::HeightChanged)
-            .style(input_style)
-            .padding(10);
-
-        let connect_button = if self.tunnel_url.is_empty() {
+        let connect_button = if self.host_ip.is_empty() {
             button("Connect")
                 .style(primary_button_style)
                 .padding([12, 24])
@@ -123,10 +87,8 @@ impl LoginState {
 
         let form = column![
             title,
-            tunnel_url_input,
-            username_input,
-            password_input,
-            row![width_input, height_input].spacing(10),
+            host_ip_input,
+            row![port_input, name_input].spacing(10),
             row![back_button, connect_button].spacing(10),
         ]
         .spacing(12)
@@ -151,52 +113,47 @@ mod tests {
     #[test]
     fn default_state() {
         let state = LoginState::new();
-        assert!(state.tunnel_url.is_empty());
-        assert!(state.username.is_empty());
-        assert!(state.password.is_empty());
-        assert_eq!(state.width, "1920");
-        assert_eq!(state.height, "1080");
+        assert!(state.host_ip.is_empty());
+        assert_eq!(state.port, DEFAULT_PORT.to_string());
+        assert!(state.display_name.is_empty());
     }
 
     #[test]
-    fn update_tunnel_url() {
+    fn update_host_ip() {
         let mut state = LoginState::new();
-        let result = state.update(LoginMessage::TunnelUrlChanged(
-            "https://test.trycloudflare.com".to_string(),
-        ));
+        let result = state.update(LoginMessage::HostIpChanged("100.64.0.1".to_string()));
         assert!(result.is_none());
-        assert_eq!(state.tunnel_url, "https://test.trycloudflare.com");
+        assert_eq!(state.host_ip, "100.64.0.1");
     }
 
     #[test]
     fn connect_with_valid_fields() {
         let mut state = LoginState::new();
-        state.tunnel_url = "https://test.trycloudflare.com".to_string();
-        state.username = "admin".to_string();
+        state.host_ip = "100.64.0.1".to_string();
 
         let result = state.update(LoginMessage::Connect);
         assert!(result.is_some());
-        let (tunnel_url, profile) = result.unwrap();
-        assert_eq!(tunnel_url, "https://test.trycloudflare.com");
-        assert_eq!(profile.hostname, "localhost");
-        assert_eq!(profile.proxy_port, LOCAL_TUNNEL_PORT);
-        assert_eq!(profile.username, "admin");
+        let profile = result.unwrap();
+        assert_eq!(profile.host_ip, "100.64.0.1");
+        assert_eq!(profile.port, DEFAULT_PORT);
     }
 
     #[test]
-    fn connect_with_empty_tunnel_url_returns_none() {
+    fn connect_with_empty_host_ip_returns_none() {
         let mut state = LoginState::new();
-        state.username = "admin".to_string();
         let result = state.update(LoginMessage::Connect);
         assert!(result.is_none());
     }
 
     #[test]
-    fn connect_with_empty_username_returns_none() {
+    fn connect_with_custom_port() {
         let mut state = LoginState::new();
-        state.tunnel_url = "https://test.trycloudflare.com".to_string();
-        let result = state.update(LoginMessage::Connect);
-        assert!(result.is_none());
-    }
+        state.host_ip = "100.64.0.1".to_string();
+        state.port = "12345".to_string();
 
+        let result = state.update(LoginMessage::Connect);
+        assert!(result.is_some());
+        let profile = result.unwrap();
+        assert_eq!(profile.port, 12345);
+    }
 }

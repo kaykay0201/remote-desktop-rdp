@@ -24,7 +24,7 @@ impl ModeSelectState {
         let connect_card = button(
             column![
                 text("Connect to Remote").size(20).color(TEXT_PRIMARY),
-                text("Join a remote machine via tunnel URL").size(13).color(TEXT_SECONDARY),
+                text("Join a remote machine via Tailscale").size(13).color(TEXT_SECONDARY),
             ]
             .spacing(8)
             .align_x(Center)
@@ -37,7 +37,7 @@ impl ModeSelectState {
         let host_card = button(
             column![
                 text("Host This Machine").size(20).color(TEXT_PRIMARY),
-                text("Expose local RDP via Cloudflare tunnel").size(13).color(TEXT_SECONDARY),
+                text("Share this machine via Tailscale").size(13).color(TEXT_SECONDARY),
             ]
             .spacing(8)
             .align_x(Center)

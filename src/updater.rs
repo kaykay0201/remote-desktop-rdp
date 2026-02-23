@@ -5,6 +5,16 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tracing::info;
 
+fn app_data_dir() -> PathBuf {
+    if let Some(data_dir) = dirs_next::data_dir() {
+        data_dir.join("rust-rdp")
+    } else if let Ok(appdata) = std::env::var("APPDATA") {
+        PathBuf::from(appdata).join("rust-rdp")
+    } else {
+        PathBuf::from(".").join("rust-rdp")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReleaseInfo {
     pub version: String,
@@ -101,7 +111,7 @@ pub async fn download_update(
     use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
 
-    let dir = crate::cloudflared::managed_dir();
+    let dir = app_data_dir();
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("Failed to create directory: {e}"))?;
@@ -206,7 +216,7 @@ pub async fn verify_checksum(exe_path: &Path, checksum_url: &str) -> Result<(), 
 }
 
 pub fn apply_update(new_exe_path: &Path) -> Result<(), String> {
-    let dir = crate::cloudflared::managed_dir();
+    let dir = app_data_dir();
     let backup_path = dir.join("rust-rdp-backup.exe");
 
     let current_exe =
@@ -232,11 +242,11 @@ pub fn apply_update(new_exe_path: &Path) -> Result<(), String> {
 }
 
 fn update_marker_path() -> PathBuf {
-    crate::cloudflared::managed_dir().join(".update-ok")
+    app_data_dir().join(".update-ok")
 }
 
 fn backup_exe_path() -> PathBuf {
-    crate::cloudflared::managed_dir().join("rust-rdp-backup.exe")
+    app_data_dir().join("rust-rdp-backup.exe")
 }
 
 pub fn check_post_update_health() {
@@ -254,7 +264,7 @@ pub fn check_post_update_health() {
 }
 
 pub fn staging_exe_path() -> PathBuf {
-    crate::cloudflared::managed_dir().join("rust-rdp-update.exe")
+    app_data_dir().join("rust-rdp-update.exe")
 }
 
 
